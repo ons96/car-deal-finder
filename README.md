@@ -129,4 +129,78 @@ The application filters cars based on:
 
 ## License
 
-MIT 
+MIT
+
+## Running in the Cloud (No Local Installation)
+
+If you have limited local resources, don't want to install software, or prefer a cloud-based environment, here are some free options to run this project:
+
+**General Workflow for Cloud IDEs:**
+1.  Open the project in the chosen cloud environment (usually by importing the GitHub repository).
+2.  Open a terminal within the cloud IDE.
+3.  Follow the "Project Setup" steps:
+    *   Create and activate a virtual environment (`python -m venv .venv` then activate it).
+    *   Run `python setup.py` to install dependencies and prepare files.
+    *   Configure `.env` if needed (especially for Facebook scraping).
+4.  Run the application: `python src/main.py --method crawl4ai --limit 50` (adjust arguments as needed). The `crawl4ai` method is generally recommended for free tiers due to potentially lower resource usage.
+5.  Download your output CSV from the cloud environment's file explorer.
+
+**Recommended Free Platforms:**
+
+1.  **GitHub Codespaces:**
+    *   **Details:** Provides a full VS Code experience in your browser, directly integrated with this GitHub repository. Offers a generous free tier of core-hours per month for personal accounts.
+    *   **Setup:**
+        1.  Go to the main page of this GitHub repository (`https://github.com/ons96/car-deal-finder`).
+        2.  Click the green `<> Code` button.
+        3.  Go to the "Codespaces" tab.
+        4.  Click "Create codespace on master" (or your main branch).
+        5.  Once loaded, use the integrated terminal to follow the general cloud workflow above.
+
+2.  **Gitpod:**
+    *   **Details:** Similar to Codespaces, offering a VS Code-like cloud IDE with a free tier.
+    *   **Setup:**
+        1.  Prefix the GitHub repository URL in your browser: `gitpod.io#https://github.com/ons96/car-deal-finder`
+        2.  Log in with your GitHub account.
+        3.  Once the workspace loads, use the integrated terminal and follow the general cloud workflow.
+
+3.  **Google Cloud Shell:**
+    *   **Details:** Provides a free Linux virtual machine instance with 5GB of persistent home directory and full terminal access. Python is usually pre-installed.
+    *   **Setup:**
+        1.  Go to [https://shell.cloud.google.com/](https://shell.cloud.google.com/) and log in with your Google account.
+        2.  In the terminal, clone the repository: `git clone https://github.com/ons96/car-deal-finder.git`
+        3.  `cd car-deal-finder`
+        4.  Follow the general cloud workflow (create venv, activate, `python setup.py`, run `main.py`).
+
+4.  **Kaggle Kernels (Notebooks):**
+    *   **Details:** Offers free access to powerful compute resources (CPU, sometimes GPU) in a Jupyter Notebook environment. Good for running Python scripts.
+    *   **Setup:**
+        1.  Go to [Kaggle](https://www.kaggle.com/) and sign in/create an account.
+        2.  Create a new Notebook.
+        3.  In a code cell, clone the repository: `!git clone https://github.com/ons96/car-deal-finder.git`
+        4.  Change directory: `!cd car-deal-finder && ...` (subsequent commands need to be aware of this path or run with `!cd car-deal-finder && python setup.py`).
+        5.  Run setup: `!cd car-deal-finder && python -m venv .venv && source .venv/bin/activate && python setup.py` (you might need to adapt venv activation for notebooks or install directly).
+        6.  Run the main script: `!cd car-deal-finder && .venv/bin/python src/main.py --method crawl4ai --limit 30`
+        7.  You can manage files and download outputs from the Kaggle interface.
+
+5.  **Replit:**
+    *   **Details:** Easy-to-use online IDE. Import from GitHub, and it tries to set up the environment.
+    *   **Setup:**
+        1.  Go to [Replit](https://replit.com/) and sign in/create an account.
+        2.  Click "Create Repl" or "Import Repo" and provide the GitHub URL: `https://github.com/ons96/car-deal-finder`.
+        3.  Once imported, use the "Shell" tab for terminal commands.
+        4.  You might need to ensure a virtual environment is used or packages are installed correctly (Replit sometimes auto-detects `requirements.txt`). Run `python setup.py` to be sure.
+        5.  Run the application: `python src/main.py --method crawl4ai --limit 30`.
+
+6.  **Alwaysdata.com:**
+    *   **Details:** Offers a free tier with SSH access, Python support, and a small amount of storage.
+    *   **Setup:**
+        1.  Sign up for a free account at [Alwaysdata](https://www.alwaysdata.com/).
+        2.  Use their file manager or SSH to upload/clone the repository.
+        3.  Connect via SSH.
+        4.  Follow the general cloud workflow (create venv, activate, `python setup.py`, run `main.py`).
+    *   **Note:** Free tier resources (CPU, RAM, storage) are limited.
+
+**Important Considerations for Cloud Environments:**
+*   **Resource Limits:** Free tiers always have limitations on CPU, RAM, storage, and runtime. For intensive scraping (especially with Selenium/Pyppeteer), you might hit these limits. Start with smaller `--limit` values.
+*   **Browser Automation Drivers:** If you intend to use `selenium` or `pyppeteer` methods, you might need to install the appropriate web browser (e.g., Chrome/Chromium) and its corresponding driver (e.g., chromedriver) in the cloud environment's terminal if they are not pre-installed. This can sometimes be tricky. The `crawl4ai` method is generally preferred for these environments as it doesn't rely on local browser automation.
+*   **Output Files:** Ensure you know how to access and download any generated CSV files from the cloud environment. 
