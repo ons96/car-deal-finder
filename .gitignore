@@ -101,4 +101,8 @@ ENV/
 dmypy.json
 
 # Pyre type checker
-.pyre/ 
+.pyre/
+
+# Log files and directories
+logs/
+*.log 
