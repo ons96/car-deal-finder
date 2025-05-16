@@ -8,6 +8,7 @@ from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from webdriver_manager.chrome import ChromeDriverManager
 import time
 from tqdm import tqdm
+import json
 
 from src.scrapers.base_scraper import BaseScraper
 
@@ -22,25 +23,27 @@ class CarGurusScraper(BaseScraper):
         self.search_url = (
             f"{self.base_url}/Cars/searchResults.action"
             "?zip=L6G3H7&inventorySearchWidgetType=AUTO&sortDir=ASC&sortType=DEAL_SCORE"
-            "&shopByTypes=NEAR_BY&bodyTypeGroup=bg8&maxMileage=150000&minPrice=500&maxPrice=100000"
-            "&seriesArray=5,35,54,7,15,36,53,9,10,16,32,33,49,57,29&vehicleStyles=SEDAN,COUPE,HATCHBACK"
+            "&shopByTypes=NEAR_BY&minPrice=500&maxPrice=20000"
         )
         
     def _setup_driver(self):
         """Setup and return a Selenium WebDriver."""
         chrome_options = Options()
-        chrome_options.add_argument("--headless")
+        chrome_options.add_argument("--headless=new")
+        # To run non-headless for debugging, comment out the line above and uncomment the line below
+        # chrome_options.headless = False
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
         chrome_options.add_argument(f"user-agent={self.headers['User-Agent']}")
         
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=chrome_options)
+        print("CarGurus WebDriver setup complete.")
         return driver
         
     def scrape(self, limit=100):
         """
-        Scrape car listings from CarGurus.ca.
+        Scrape car listings from CarGurus.ca by parsing JSON data.
         
         Args:
             limit (int): Maximum number of listings to scrape
@@ -48,123 +51,157 @@ class CarGurusScraper(BaseScraper):
         Returns:
             list: List of car listing dictionaries
         """
-        print(f"Scraping {self.name}...")
+        print(f"Scraping {self.name} (expecting JSON response)...")
         listings = []
         
+        driver = None  # Initialize driver to None for the finally block
         try:
             driver = self._setup_driver()
             driver.get(self.search_url)
             
-            # Wait for listings to load
-            WebDriverWait(driver, 20).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "div.ft-listing"))
-            )
+            # Wait a bit for the page (JSON) to fully load
+            # This might be adjusted based on observation
+            time.sleep(5) 
             
-            # Check for cookie consent popup and accept it if present
+            page_content = driver.page_source
+            
+            # The actual JSON content might be embedded within <pre> tags or similar
+            # Try to find JSON within <pre> tags first
             try:
-                consent_button = WebDriverWait(driver, 5).until(
-                    EC.element_to_be_clickable((By.CSS_SELECTOR, "button#onetrust-accept-btn-handler"))
-                )
-                consent_button.click()
-                time.sleep(2)
-            except TimeoutException:
-                pass
-            
-            # Determine how many pages to scrape
-            try:
-                total_results_text = driver.find_element(By.CSS_SELECTOR, "span.sCjvBe").text
-                total_results = int(total_results_text.replace(',', '').replace('Results', '').strip())
-                total_pages = min(total_results // 15 + 1, (limit // 15) + 1)
-            except (NoSuchElementException, ValueError):
-                total_pages = (limit // 15) + 1
-            
-            for page in tqdm(range(1, total_pages + 1), desc="Scraping pages"):
-                # Extract listings from current page
-                listing_elements = driver.find_elements(By.CSS_SELECTOR, "div.ft-listing")
-                
-                for element in listing_elements:
-                    if len(listings) >= limit:
-                        break
-                        
-                    try:
-                        # Extract data
-                        url_element = element.find_element(By.CSS_SELECTOR, "a.ft-listings__list-item")
-                        url = url_element.get_attribute("href")
-                        
-                        # Title (may contain year, make, model)
-                        title_element = element.find_element(By.CSS_SELECTOR, "h4.ft-listing__title")
-                        title = title_element.text.strip()
-                        
-                        # Extract year, make, model from title
-                        year = self._extract_year(title)
-                        make, model = self._extract_make_model(title)
-                        
-                        # Price
-                        try:
-                            price_element = element.find_element(By.CSS_SELECTOR, "span.ft-listing__price")
-                            price = self._extract_price(price_element.text)
-                        except NoSuchElementException:
-                            price = None
-                        
-                        # Mileage
-                        try:
-                            mileage_element = element.find_element(By.CSS_SELECTOR, "p.ft-listing__key-specs")
-                            mileage = self._extract_mileage(mileage_element.text)
-                        except NoSuchElementException:
-                            mileage = None
-                        
-                        # Body type - try to infer from URL or title, or element class
-                        body_type = None
-                        for bt in ["sedan", "coupe", "hatchback", "suv", "truck", "van"]:
-                            if bt in url.lower() or bt in title.lower():
-                                body_type = bt
-                                break
-                        
-                        # Create listing record
-                        listing = {
-                            'url': url,
-                            'title': title,
-                            'year': year,
-                            'make': make,
-                            'model': model,
-                            'price': price,
-                            'mileage': mileage,
-                            'body_type': body_type,
-                            'source': self.name
-                        }
-                        
-                        # Only add complete listings
-                        if all([url, year, make, model, price, mileage]):
-                            listings.append(listing)
-                    
-                    except Exception as e:
-                        print(f"Error extracting listing: {str(e)}")
-                        continue
-                
-                if len(listings) >= limit or page == total_pages:
-                    break
-                
-                # Go to next page
+                pre_tag_content = driver.find_element(By.TAG_NAME, "pre").text
+                data = json.loads(pre_tag_content)
+                print("Successfully parsed JSON from <pre> tag.")
+            except (NoSuchElementException, json.JSONDecodeError):
+                # If no <pre> tag or it doesn't contain valid JSON, try the whole page source
                 try:
-                    next_button = driver.find_element(By.CSS_SELECTOR, "a[aria-label='Next page']")
-                    driver.execute_script("arguments[0].scrollIntoView();", next_button)
-                    next_button.click()
-                    
-                    # Wait for new page to load
-                    time.sleep(3)
-                    WebDriverWait(driver, 20).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, "div.ft-listing"))
-                    )
-                except (NoSuchElementException, TimeoutException) as e:
-                    print(f"Couldn't navigate to next page: {str(e)}")
+                    data = json.loads(page_content)
+                    print("Successfully parsed JSON from full page source.")
+                except json.JSONDecodeError as e:
+                    print(f"Failed to decode JSON from page source. Error: {e}")
+                    print(f"Page content (first 500 chars): {page_content[:500]}")
+                    # Save the problematic content for debugging
+                    with open("cargurus_error_page.html", "w", encoding="utf-8") as f:
+                        f.write(page_content)
+                    print("Saved non-JSON page content to cargurus_error_page.html")
+                    return listings # Exit if JSON parsing fails
+
+            # --- JSON Parsing Logic ---
+            # This part is speculative and depends on the actual JSON structure.
+            # Common root keys for listings could be 'listings', 'results', 'data', 'searchResult', 'items', etc.
+            # We will try a few common ones or look for a list of dictionaries.
+            
+            json_listings = []
+            if isinstance(data, list): # If the root is a list of listings
+                json_listings = data
+            elif isinstance(data, dict):
+                # Try common keys that might hold the list of listings
+                possible_list_keys = ['listings', 'results', 'data', 'items', 'vehicles', 'cars', 'searchResponse', 'searchResult', 'dataFeed']
+                for key in possible_list_keys:
+                    if key in data and isinstance(data[key], list):
+                        json_listings = data[key]
+                        print(f"Found listings under key: '{key}'")
+                        break
+                    # Sometimes listings are nested, e.g., data['results']['listings']
+                    elif key in data and isinstance(data[key], dict):
+                        for sub_key in possible_list_keys: # Check nested keys
+                            if sub_key in data[key] and isinstance(data[key][sub_key], list):
+                                json_listings = data[key][sub_key]
+                                print(f"Found listings under nested key: '{key}.{sub_key}'")
+                                break
+                        if json_listings: break
+                
+                if not json_listings and 'searchResults' in data and 'listings' in data['searchResults']: # Specific common pattern
+                     json_listings = data['searchResults']['listings']
+                     print("Found listings under 'searchResults.listings'")
+
+            if not json_listings:
+                print("Could not find a list of listings in the parsed JSON.")
+                print(f"JSON data (first 500 chars if dict, or type): {str(data)[:500] if isinstance(data, dict) else type(data)}")
+                # Save the JSON structure for inspection if listings not found
+                with open("cargurus_parsed_data.json", "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=4)
+                print("Saved parsed JSON data to cargurus_parsed_data.json for inspection.")
+                return listings
+
+            print(f"Found {len(json_listings)} items in JSON data. Processing up to limit ({limit})...")
+
+            for item in tqdm(json_listings, desc="Processing JSON items"):
+                if len(listings) >= limit:
                     break
+                
+                try:
+                    # Extract data - field names based on debugged JSON structure
+                    title = item.get('listingTitle', '')
+                    year = item.get('carYear')
+                    make = item.get('makeName', '')
+                    model = item.get('modelName', '')
+                    price = item.get('price') # This is a float
                     
+                    # Mileage: prefer the direct numeric field if available
+                    mileage_val = item.get('mileage') 
+                    if mileage_val is None and 'unitMileage' in item and isinstance(item['unitMileage'], dict):
+                        mileage_val = item['unitMileage'].get('value')
+                    mileage = int(mileage_val) if mileage_val is not None else None
+                    
+                    # Construct URL using the item ID
+                    item_id = item.get('id')
+                    url = None
+                    if item_id:
+                        # This URL structure is a common one for CarGurus, might need adjustment if it doesn't lead to a user-viewable page.
+                        # Using the viewPrintableDeal.action variant as it was in the previous attempt.
+                        url = f"{self.base_url}/Cars/inventorylisting/viewPrintableDeal.action?inventoryListing={item_id}&sourceContext=carGurusHomePageModel"
+                    
+                    body_type_str = item.get('bodyTypeName', '')
+                    body_type = None
+                    # Standardize body type
+                    bt_lower = body_type_str.lower()
+                    if "sedan" in bt_lower: body_type = "sedan"
+                    elif "coupe" in bt_lower: body_type = "coupe"
+                    elif "hatchback" in bt_lower: body_type = "hatchback"
+                    elif "suv" in bt_lower or "sport utility" in bt_lower : body_type = "suv"
+                    elif "truck" in bt_lower: body_type = "truck"
+                    elif "van" in bt_lower: body_type = "van"
+                    elif "minivan" in bt_lower: body_type = "van"
+                    else: body_type = "sedan" # Default if not matched
+
+                    # Basic validation
+                    if not all([url, year, make, model, price is not None, mileage is not None]):
+                        print(f"Skipping item due to missing core data after mapping: Year-{year}, Make-{make}, Model-{model}, Price-{price}, Mileage-{mileage}, URL-{url}. Original Title: '{title}'")
+                        # print(f"  Full item dump: {json.dumps(item, indent=2)}") # For deeper debugging if needed
+                        continue
+
+                    listing_data = {
+                        'url': url,
+                        'title': title,
+                        'year': int(year) if year is not None else None,
+                        'make': str(make),
+                        'model': str(model),
+                        'price': float(price) if price is not None else None,
+                        'mileage': int(mileage) if mileage is not None else None,
+                        'body_type': body_type,
+                        'source': self.name
+                    }
+                    listings.append(listing_data)
+                
+                except Exception as e:
+                    print(f"Error processing a JSON item: {e}. Item: {str(item)[:200]}...") 
+                    continue
+            
         except Exception as e:
-            print(f"Error scraping {self.name}: {str(e)}")
+            print(f"Major error in CarGurus JSON scraping process: {str(e)}")
+            # If driver is active and an error occurs, try to save page source for inspection
+            if driver and 'page_content' not in locals(): # If page_content wasn't captured before error
+                try:
+                    error_page_source = driver.page_source
+                    with open("cargurus_error_page_at_exception.html", "w", encoding="utf-8") as f:
+                        f.write(error_page_source)
+                    print("Saved page source at point of major error to cargurus_error_page_at_exception.html")
+                except Exception as e_save:
+                    print(f"Could not save page source during error handling: {e_save}")
         
         finally:
-            if 'driver' in locals():
+            if driver:
                 driver.quit()
                 
-        print(f"Scraped {len(listings)} listings from {self.name}")
+        print(f"Scraped {len(listings)} listings from {self.name} using JSON parsing.")
         return listings 
