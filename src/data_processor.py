@@ -72,7 +72,7 @@ class VehicleDataProcessor:
             # Explicitly specify dtype for Year to avoid mixed type warnings / issues
             approved_df = pd.read_csv(approved_vehicles_path, dtype={'Year': 'Int64'}) # Use Int64 to handle potential NA as pandas integer
             # Ensure required columns exist
-            required_cols = ['Make', 'Model', 'Year', 'QIRRate', 'DefectRate']
+            required_cols = ['Make', 'Model', 'Year', 'QIRRate', 'DefectRate'] # Composite score is optional in file
             if not all(col in approved_df.columns for col in required_cols):
                 raise ValueError(f"Approved vehicles CSV is missing one or more required columns: {required_cols}")
 
@@ -81,15 +81,27 @@ class VehicleDataProcessor:
             approved_df['Model_norm'] = approved_df['Model'].str.lower().str.replace('-', ' ', regex=False).str.strip()
             # Convert Year to integer, coercing errors to NaT which will then be dropped
             approved_df['Year'] = pd.to_numeric(approved_df['Year'], errors='coerce')
+            
+            # Convert QIRRate and DefectRate to numeric, coercing errors to np.nan
+            approved_df['QIRRate'] = pd.to_numeric(approved_df['QIRRate'], errors='coerce')
+            approved_df['DefectRate'] = pd.to_numeric(approved_df['DefectRate'], errors='coerce')
+            
             approved_df.dropna(subset=['Make_lc', 'Model_norm', 'Year'], inplace=True) # Drop rows where key info is missing
             approved_df['Year'] = approved_df['Year'].astype(int)
-            # Normalize composite score (should be float between 0 and 1)
+            
+            # Normalize composite score (should be float between 0 and 100)
             if 'Composite score' in approved_df.columns:
-                approved_df['CompositeScore'] = pd.to_numeric(approved_df['Composite score'], errors='coerce').fillna(0) * 100
+                # Ensure it's treated as a score from 0 to 100. If it's 0-1, multiply by 100.
+                # Assuming CSV provides it as 0-100 directly based on previous context.
+                approved_df['CompositeScore'] = pd.to_numeric(approved_df['Composite score'], errors='coerce').fillna(0)
+                # If the values are typically small (e.g. 0.x, 1.x), it might imply they need *100.
+                # For now, assuming they are already scaled 0-100.
             else:
-                approved_df['CompositeScore'] = 0
+                approved_df['CompositeScore'] = 0 # Default if column is missing
 
-            self.approved_vehicles_data = approved_df[['Make_lc', 'Model_norm', 'Year', 'CompositeScore']].to_dict('records')
+            cols_to_keep = ['Make_lc', 'Model_norm', 'Year', 'CompositeScore', 'QIRRate', 'DefectRate']
+            self.approved_vehicles_data = approved_df[cols_to_keep].to_dict('records')
+            
             # Create a set of (make, model) tuples for quick lookup
             self.approved_make_model_set = set()
             if 'Make_lc' in approved_df.columns and 'Model_norm' in approved_df.columns:
@@ -236,8 +248,8 @@ class VehicleDataProcessor:
                 # print(f"Warning: Skipping row due to missing or invalid year: {row.to_dict()}")
                 continue  # Skip this row
 
-            make = row['Make'].lower()
-            model = row['Model'].lower()
+            make = str(row['Make']).lower().strip()
+            model = str(row['Model']).lower().replace('-', ' ').strip() # Normalize model name
             try:
                 year = int(row['Year'])
             except ValueError:
@@ -259,18 +271,35 @@ class VehicleDataProcessor:
     def get_reliability_scores(self, make, model, year):
         """
         Get QIRRate and DefectRate for a vehicle.
+        Prioritizes data from approved_vehicles_data, then falls back to old reliability data.
+        
+        Args:
+            make (str): Vehicle make (assumed to be lowercased by caller).
+            model (str): Vehicle model (assumed to be normalized: lowercased, spaces for hyphens by caller).
+            year (int): Vehicle year.
         
         Returns:
-            tuple: (QIRRate, DefectRate) or (None, None) if not found
+            tuple: (QIRRate, DefectRate) with values or np.nan if not found/applicable.
         """
-        make = make.lower()
-        model = model.lower()
-        year = int(year)
+        # year is already int, make is lower, model is normalized (e.g. "civic si")
         
+        # 1. Check in self.approved_vehicles_data (primary source)
+        for approved_vehicle in self.approved_vehicles_data:
+            # Using startswith for model matching as done in process_car_listings
+            if (approved_vehicle['Make_lc'] == make and
+                approved_vehicle['Year'] == year and
+                model.startswith(approved_vehicle['Model_norm'])): # model is the normalized scraped model
+                
+                qir = approved_vehicle.get('QIRRate')     # This will be np.nan if missing from CSV and coerced
+                defect = approved_vehicle.get('DefectRate') # This will be np.nan if missing
+                return qir, defect
+
+        # 2. Fallback to old reliability data (self.qir_rate_dict, self.defect_rate_dict from chart_data_filtered.csv)
+        # These dictionaries now use normalized model keys due to changes in _convert_to_lookup_dict
         qir_rate = None
         defect_rate = None
         
-        # Try to get scores directly
+        # Try to get scores directly from old data using normalized make/model
         if make in self.qir_rate_dict:
             if model in self.qir_rate_dict[make]:
                 if year in self.qir_rate_dict[make][model]:
@@ -281,18 +310,18 @@ class VehicleDataProcessor:
                 if year in self.defect_rate_dict[make][model]:
                     defect_rate = self.defect_rate_dict[make][model][year]
         
-        # If not found, try to estimate from nearby years
-        if qir_rate is None and make in self.qir_rate_dict and model in self.qir_rate_dict[make]:
+        # If not found, try to estimate from nearby years (for old data)
+        if qir_rate is None and make in self.qir_rate_dict and model in self.qir_rate_dict.get(make, {}):
             years = list(self.qir_rate_dict[make][model].keys())
             if years:
-                closest_year = min(years, key=lambda y: abs(y - year))
+                closest_year = min(years, key=lambda y_old: abs(y_old - year))
                 if abs(closest_year - year) <= 2:  # Only use if within 2 years
                     qir_rate = self.qir_rate_dict[make][model][closest_year]
         
-        if defect_rate is None and make in self.defect_rate_dict and model in self.defect_rate_dict[make]:
+        if defect_rate is None and make in self.defect_rate_dict and model in self.defect_rate_dict.get(make, {}):
             years = list(self.defect_rate_dict[make][model].keys())
             if years:
-                closest_year = min(years, key=lambda y: abs(y - year))
+                closest_year = min(years, key=lambda y_old: abs(y_old - year))
                 if abs(closest_year - year) <= 2:  # Only use if within 2 years
                     defect_rate = self.defect_rate_dict[make][model][closest_year]
         

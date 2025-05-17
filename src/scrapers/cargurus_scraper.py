@@ -16,14 +16,30 @@ from src.scrapers.base_scraper import BaseScraper
 class CarGurusScraper(BaseScraper):
     """Scraper for CarGurus.ca"""
     
-    def __init__(self):
+    # Constants for scraper configuration
+    MAX_PRICE = 20000
+    SEARCH_RADIUS_KM = 250
+    SEARCH_RADIUS_MILES = 155 # Approx 250km, CarGurus might use miles
+    # Confirmed CarGurus uses entitySelectingHelper.selectedEntity= for make/model and specific year params
+    # However, to avoid complexity of mapping all approved models to CarGurus entity IDs and managing multiple queries,
+    # we will filter by price/location in URL, then filter by approved make/model/year in memory post-scrape.
+
+    def __init__(self, postal_code="L6M3S7", approved_vehicles_list=None):
         """Initialize the CarGurus scraper."""
         super().__init__("CarGurus.ca")
         self.base_url = "https://www.cargurus.ca"
+        self.postal_code = postal_code.replace(" ", "") # Ensure no spaces
+        self.approved_vehicles = approved_vehicles_list if approved_vehicles_list else []
+
+        # Dynamically build the search URL
+        # Parameters: zip, minPrice, maxPrice, distance (likely miles)
+        # sortType=DEAL_SCORE&sortDir=ASC is their default for good deals
+        # inventorySearchWidgetType=AUTO is standard
+        # shopByTypes=NEAR_BY seems relevant for distance based search
         self.search_url = (
-            f"{self.base_url}/Cars/searchResults.action"
-            "?zip=L6G3H7&inventorySearchWidgetType=AUTO&sortDir=ASC&sortType=DEAL_SCORE"
-            "&shopByTypes=NEAR_BY&minPrice=500&maxPrice=20000"
+            f"{self.base_url}/Cars/searchResults.action?"
+            f"zip={self.postal_code}&inventorySearchWidgetType=AUTO&sortDir=ASC&sortType=DEAL_SCORE"
+            f"&shopByTypes=NEAR_BY&minPrice=500&maxPrice={self.MAX_PRICE}&distance={self.SEARCH_RADIUS_MILES}"
         )
         
     def _setup_driver(self):
@@ -163,6 +179,27 @@ class CarGurusScraper(BaseScraper):
                     elif "van" in bt_lower: body_type = "van"
                     elif "minivan" in bt_lower: body_type = "van"
                     else: body_type = "sedan" # Default if not matched
+
+                    # --- Apply Make/Model/Year Filter ---
+                    is_approved = False
+                    if self.approved_vehicles:
+                        scraped_make_lc = str(make).lower().strip()
+                        scraped_model_norm = str(model).lower().replace('-', ' ').strip()
+                        scraped_year_int = int(year) if year is not None else 0
+
+                        for approved_make, approved_model, approved_year in self.approved_vehicles:
+                            if (scraped_make_lc == approved_make and 
+                                scraped_year_int == approved_year and 
+                                scraped_model_norm.startswith(approved_model)):
+                                is_approved = True
+                                break
+                    else:
+                        is_approved = True # If no approved list, don't filter
+
+                    if not is_approved:
+                        # print(f"Skipping unapproved vehicle: {year} {make} {model}")
+                        continue
+                    # --- End Filter ---
 
                     # Basic validation
                     if not all([url, year, make, model, price is not None, mileage is not None]):

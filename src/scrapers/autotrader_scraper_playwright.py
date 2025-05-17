@@ -14,13 +14,45 @@ load_dotenv()
 class AutoTraderPlaywrightScraper(BaseScraper):
     """Scraper for AutoTrader.ca using Playwright"""
     
-    def __init__(self):
+    # Constants for scraper configuration
+    MAX_PRICE = 20000
+    SEARCH_RADIUS_KM = 250 # Autotrader uses 'prx' parameter for radius in km
+    DEFAULT_PROVINCE_CODE = "ON" # Default province, can be made more dynamic later if needed
+
+    def __init__(self, postal_code="L6M3S7", approved_vehicles_list=None):
         super().__init__("AutoTrader.ca (Playwright)")
         self.base_url = "https://www.autotrader.ca"
+        self.postal_code = postal_code.replace(" ", "") # Ensure no spaces for URL
+        self.approved_vehicles = approved_vehicles_list if approved_vehicles_list else []
+        
+        # Dynamically build the search URL
+        # Example: /cars/on/oakville/?...&loc=L6M3S7... becomes /cars/on/{city_from_postal_code}/?
+        # For simplicity, we'll keep /on/ (Ontario) and use the postal code directly for loc=
+        # A more advanced version might use a postal code to city/province API if needed
+        # For now, assuming postal code is sufficient for autotrader's loc= parameter and prv=Ontario is okay.
+        
+        # Construct search parameters
+        # rcp=100 (results per page), rcs=0 (start index), srt=39 (sort by date desc)
+        # yRng=%2C (no min year), pRng=%2C{MAX_PRICE} (max price)
+        # prx={SEARCH_RADIUS_KM} (radius)
+        # prv=Ontario (province - tied to postal code usually)
+        # loc={self.postal_code} (postal code)
+        # hprc=True (has price), wcp=True (with CPO), sts=New-Used, inMarket=advancedSearch
+        
+        # Note: Autotrader can be sensitive to exact city names in the path if postal code doesn't align perfectly.
+        # Using a generic path part like "all-locations" or just relying on postal code might be safer if issues arise.
+        # For now, we will use a placeholder for city, or remove it if postal code is enough.
+        # Let's try removing explicit city from path and relying on loc and prv.
+        # So, instead of /cars/on/oakville/, try /cars/on/
+        # Update: Autotrader seems to redirect /cars/on/ to /cars/ontario/ so that should work.
+        
         self.search_url = (
-            f"{self.base_url}/cars/on/oakville/"
-            "?rcp=100&rcs=0&srt=39&yRng=1996%2C&pRng=%2C20000&prx=100&prv=Ontario&loc=L6M%203S7&hprc=True&wcp=True&sts=New-Used&inMarket=advancedSearch"
+            f"{self.base_url}/cars/{self.DEFAULT_PROVINCE_CODE.lower()}/"
+            f"?rcp=100&rcs=0&srt=39&yRng=%2C&pRng=%2C{self.MAX_PRICE}"
+            f"&prx={self.SEARCH_RADIUS_KM}&prv={self.DEFAULT_PROVINCE_CODE}"
+            f"&loc={self.postal_code}&hprc=True&wcp=True&sts=New-Used&inMarket=advancedSearch"
         )
+
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
         }
@@ -188,6 +220,29 @@ class AutoTraderPlaywrightScraper(BaseScraper):
                                 except Exception:
                                     pass
                                 if not body_type: body_type = "sedan" # Default
+
+                                # --- Apply Make/Model/Year Filter ---
+                                is_approved = False
+                                if self.approved_vehicles:
+                                    # Normalize scraped make/model for comparison
+                                    scraped_make_lc = str(make).lower().strip()
+                                    scraped_model_norm = str(model).lower().replace('-', ' ').strip()
+                                    scraped_year_int = int(year) if year else 0
+
+                                    for approved_make, approved_model, approved_year in self.approved_vehicles:
+                                        # Using startswith for model matching to handle trims (e.g. "civic si" matches "civic")
+                                        if (scraped_make_lc == approved_make and 
+                                            scraped_year_int == approved_year and 
+                                            scraped_model_norm.startswith(approved_model)):
+                                            is_approved = True
+                                            break
+                                else:
+                                    is_approved = True # If no approved list provided, don't filter by it
+                                
+                                if not is_approved:
+                                    # print(f"Skipping unapproved vehicle: {year} {make} {model}")
+                                    continue # Skip to next item if not approved
+                                # --- End Filter ---
 
                                 if all([url, year, make, model, price is not None, mileage is not None]):
                                     listings.append({

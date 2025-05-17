@@ -1,11 +1,15 @@
 import csv
 import re
 import os
+import datetime
 
-# Define file paths
-facebook_csv_path = "car-deal-finder/data/facebook-2025-05-16.csv"
-approved_vehicles_csv_path = "car-deal-finder/data/approved_vehicles_reliability.csv"
-output_csv_path = "car-deal-finder/data/output.csv"
+# Get the absolute path of the directory where the script is located
+script_dir = os.path.dirname(os.path.abspath(__file__))
+
+# Define file paths relative to the script's directory
+# facebook_csv_path = os.path.join(script_dir, "../data/facebook-2025-05-16.csv") # No longer needed here
+approved_vehicles_csv_path = os.path.join(script_dir, "../data/approved_vehicles_reliability.csv")
+output_csv_path = os.path.join(script_dir, "../data/output.csv") # This might also be part of a different workflow now
 
 # --- Helper Functions ---
 def parse_title(title_str):
@@ -135,7 +139,7 @@ def parse_mileage(mileage_str):
 # --- Load Approved Vehicles --- (Make, Model, Year)
 approved_vehicles = set()
 try:
-    with open(approved_vehicles_csv_path, mode='r', encoding='utf-8') as f_approved:
+    with open(approved_vehicles_csv_path, mode='r', encoding='utf-8-sig') as f_approved:
         reader = csv.reader(f_approved)
         header_approved = next(reader) # Skip header
         make_col_idx = header_approved.index('Make')
@@ -163,7 +167,7 @@ except Exception as e:
     # exit()
 
 # --- Process Facebook Data --- #
-processed_listings = []
+# processed_listings = [] # This will be initialized in the function
 
 non_vehicle_keywords = [
     "parts", "wanted", "buy cars", "cash for cars", "scrap", "tires", "rims", "engine", 
@@ -172,124 +176,170 @@ non_vehicle_keywords = [
     "any car and truck"
 ]
 
-
-try:
-    with open(facebook_csv_path, mode='r', encoding='utf-8') as f_facebook:
-        reader = csv.reader(f_facebook)
-        header_fb = next(reader) # Skip header
-        # Based on user's info: 0:URL, 1:Img, 2:Price, 3:Title, 4:Location, 5:Mileage, 6:AltPrice(opt)
-        url_idx, price_idx, title_idx, loc_idx, mileage_idx = 0, 2, 3, 4, 5
-        alt_price_idx = 6 if len(header_fb) > 6 else -1 # Check if alt price col exists
-
-        for row in reader:
-            try:
-                title_str = row[title_idx].strip() if len(row) > title_idx else None
-                price_str = row[price_idx].strip() if len(row) > price_idx else None
-                mileage_str = row[mileage_idx].strip() if len(row) > mileage_idx else None
-                url = row[url_idx].strip() if len(row) > url_idx else None
-                location = row[loc_idx].strip() if len(row) > loc_idx else None
-                
-                alt_price_str = None
-                if alt_price_idx != -1 and len(row) > alt_price_idx and row[alt_price_idx].strip():
-                    alt_price_str = row[alt_price_idx].strip()
-
-                # 1. Filter out non-vehicle/junk listings by title
-                if any(keyword in title_str.lower() for keyword in non_vehicle_keywords):
-                    # print(f"Filtered (junk title): {title_str}")
-                    continue
-
-                # 2. Parse title for Year, Make, Model
-                year, make, model = parse_title(title_str)
-                if not year or not make or not model:
-                    # print(f"Filtered (could not parse year/make/model): {title_str}")
-                    continue
-                
-                # Normalize for comparison
-                make_lower = make.lower()
-                model_lower = model.lower()
-
-                # 3. Filter against approved vehicles
-                # Check various model string permutations for better matching
-                approved_key = (make_lower, model_lower, year)
-                approved_key_no_space = (make_lower, model_lower.replace(" ", ""), year)
-                approved_key_no_dash = (make_lower, model_lower.replace("-", ""), year)
-                approved_key_dash_instead_of_space = (make_lower, model_lower.replace(" ", "-"), year)
-                
-                if not (
-                    approved_key in approved_vehicles or 
-                    approved_key_no_space in approved_vehicles or 
-                    approved_key_no_dash in approved_vehicles or
-                    approved_key_dash_instead_of_space in approved_vehicles
-                ):
-                    # print(f"Filtered (not approved): {year} {make} {model}")
-                    continue
-
-                # 4. Parse and convert mileage
-                mileage_km = parse_mileage(mileage_str)
-                if mileage_km is None and "enclosed mobility" not in title_str.lower() and "scooter" not in title_str.lower(): # some valid items have no mileage
-                    # print(f"Filtered (bad mileage): {title_str} -> {mileage_str}")
-                    # continue # Keep if mileage is missing, but flag it or handle later if needed.
-                    mileage_km = -1 # Represent missing mileage
-
-                # 5. Parse price, handle "Free" and low prices
-                price = parse_price(price_str)
-                if price is None and alt_price_str:
-                    price = parse_price(alt_price_str)
-                
-                if price == 0: # "Free" listings
-                    # print(f"Filtered (Free price): {title_str}")
-                    continue
-                
-                if price is not None and price < 2000: 
-                    # Heuristic: if car is relatively new-ish or low mileage, a price < $2000 is suspicious
-                    # This is a rough filter. More sophisticated logic might be needed.
-                    current_year_for_calc = 2024 # Assuming current year for age calculation
-                    is_newish = year is not None and (current_year_for_calc - year) < 10 # Less than 10 years old
-                    is_low_mileage = mileage_km is not None and mileage_km != -1 and mileage_km < 150000
-                    if is_newish or is_low_mileage:
-                        # print(f"Flagged (potentially monthly payment?): {price} for {year} {make} {model} with {mileage_km}km")
-                        # For now, let's filter them out. Or could set price to -1 or a flag.
-                        continue 
-
-                if price is None:
-                    # print(f"Filtered (bad/missing price): {title_str} -> {price_str}")
-                    continue
-
-                processed_listings.append([
-                    year, make.strip(), model.strip(), price, 
-                    int(mileage_km) if mileage_km is not None and mileage_km != -1 else '', # Store as int or empty
-                    location, url, "Facebook Marketplace"
-                ])
-            except Exception as e:
-                # print(f"Skipping row due to error: {row} -> {e}")
-                continue
-except FileNotFoundError:
-    print(f"Error: Facebook CSV file not found at {facebook_csv_path}")
-    # exit()
-except Exception as e:
-    print(f"Error processing Facebook CSV: {e}")
-    # exit()
-
-# --- Write to Output CSV --- #
-if processed_listings:
-    file_exists = os.path.isfile(output_csv_path)
+# def get_parsed_facebook_listings(): # Old function name
+def parse_facebook_csv(input_csv_path): # New function name and parameter
+    local_processed_listings = [] # Use a local list
     try:
-        with open(output_csv_path, mode='a', newline='', encoding='utf-8') as f_output:
-            writer = csv.writer(f_output)
-            if not file_exists or os.path.getsize(output_csv_path) == 0:
-                writer.writerow(['Year', 'Make', 'Model', 'Price', 'Mileage (km)', 'Location', 'URL', 'Source']) # Header
-            writer.writerows(processed_listings)
-        print(f"Successfully processed {len(processed_listings)} listings and appended to {output_csv_path}")
+        # with open(facebook_csv_path, mode='r', encoding='utf-8') as f_facebook: # Old hardcoded path
+        with open(input_csv_path, mode='r', encoding='utf-8') as f_facebook: # Use function argument
+            reader = csv.reader(f_facebook)
+            header_fb = next(reader) # Skip header
+            # Attempt to dynamically find column indices, default if not found or error
+            try:
+                url_idx = header_fb.index('Link') # Common name for URL
+                price_idx = header_fb.index('Price') 
+                title_idx = header_fb.index('Title')
+                loc_idx = header_fb.index('Location')
+                mileage_idx = header_fb.index('Mileage')
+                # For alternative price, check if 'Alternate Price' or similar exists
+                alt_price_idx = header_fb.index('Alternate Price') if 'Alternate Price' in header_fb else -1 
+            except ValueError:
+                # Fallback to default indices if specific headers are not found
+                print("Warning: Could not find all expected headers (Link, Price, Title, Location, Mileage). Using default column indices [0,2,3,4,5]. This may lead to incorrect parsing.")
+                url_idx, price_idx, title_idx, loc_idx, mileage_idx = 0, 2, 3, 4, 5
+                alt_price_idx = 6 if len(header_fb) > 6 else -1
+
+
+            for row_num, row in enumerate(reader):
+                try:
+                    # Defensive access to row elements
+                    title_str = row[title_idx].strip() if len(row) > title_idx and row[title_idx] else None
+                    price_str = row[price_idx].strip() if len(row) > price_idx and row[price_idx] else None
+                    mileage_str = row[mileage_idx].strip() if len(row) > mileage_idx and row[mileage_idx] else None
+                    url = row[url_idx].strip() if len(row) > url_idx and row[url_idx] else None
+                    location = row[loc_idx].strip() if len(row) > loc_idx and row[loc_idx] else None
+                    
+                    alt_price_str = None
+                    if alt_price_idx != -1 and len(row) > alt_price_idx and row[alt_price_idx] and row[alt_price_idx].strip():
+                        alt_price_str = row[alt_price_idx].strip()
+
+                    if not title_str: 
+                        continue
+
+                    if any(keyword in title_str.lower() for keyword in non_vehicle_keywords):
+                        continue
+
+                    year, make, model = parse_title(title_str)
+                    if not year or not make or not model:
+                        continue
+                    
+                    make_lower = make.lower()
+                    model_lower = model.lower()
+
+                    approved_key = (make_lower, model_lower, year)
+                    approved_key_no_space = (make_lower, model_lower.replace(" ", ""), year)
+                    approved_key_no_dash = (make_lower, model_lower.replace("-", ""), year)
+                    approved_key_dash_instead_of_space = (make_lower, model_lower.replace(" ", "-"), year)
+                    
+                    if not (
+                        approved_key in approved_vehicles or 
+                        approved_key_no_space in approved_vehicles or 
+                        approved_key_no_dash in approved_vehicles or
+                        approved_key_dash_instead_of_space in approved_vehicles
+                    ):
+                        continue
+
+                    mileage_km = parse_mileage(mileage_str)
+                    if mileage_km is None and "enclosed mobility" not in title_str.lower() and "scooter" not in title_str.lower():
+                        mileage_km = -1 
+                    elif mileage_km is not None:
+                        mileage_km = int(mileage_km)
+
+                    price = parse_price(price_str)
+                    if price is None and alt_price_str:
+                        price = parse_price(alt_price_str)
+                    
+                    if price == 0: # Skip free listings
+                        continue
+                    
+                    # Stricter filter for very cheap vehicles that are likely not cars or are problematic
+                    if price is not None and price < 1000: # Increased threshold slightly
+                        current_year_for_calc = datetime.datetime.now().year 
+                        # If it's very new (e.g. < 5 years old) and < $1000, it's suspicious
+                        is_suspiciously_new = year is not None and (current_year_for_calc - year) < 5
+                        # If it's very low mileage (e.g. < 50000km) and < $1000, also suspicious
+                        is_suspiciously_low_mileage = mileage_km is not None and mileage_km != -1 and mileage_km < 50000
+                        
+                        if is_suspiciously_new or is_suspiciously_low_mileage:
+                            # print(f"Skipping suspiciously cheap listing: {title_str} Price: {price} Year: {year} Mileage: {mileage_km}")
+                            continue 
+
+                    if price is None: # Skip if price couldn't be parsed at all
+                        continue
+                    
+                    # Ensure values are appropriate before adding
+                    # Example: ensure year is plausible, mileage isn't excessively high for the price etc.
+                    # For now, this is basic, can be expanded.
+                    if year and year < 1980: # Skip very old cars unless specifically desired
+                        continue
+
+                    listing_details = {
+                        "title": title_str,
+                        "price": price,
+                        "year": year,
+                        "make": make,
+                        "model": model,
+                        "mileage": mileage_km if mileage_km is not None else -1, # Use -1 for unknown after filtering
+                        "location": location,
+                        "url": url,
+                        "source_file": os.path.basename(input_csv_path), # Add source file
+                        "scraped_date": datetime.date.today().isoformat() # Add scraped date
+                    }
+                    local_processed_listings.append(listing_details)
+                
+                except Exception as e:
+                    # print(f"Error processing row {row_num+2} in {os.path.basename(input_csv_path)}: {row}. Error: {e}")
+                    continue
+        
+    except FileNotFoundError:
+        print(f"Error: Facebook data file not found at {input_csv_path}")
     except Exception as e:
-        print(f"Error writing to output CSV: {e}")
-else:
-    print("No listings processed to write to output.")
+        print(f"Error reading or processing Facebook data from {input_csv_path}: {e}")
+        
+    return local_processed_listings
+
+# It's generally good practice not to have executable code at the module level
+# like direct calls to process data or print statements unless it's for specific debugging
+# or if this script is intended to be run standalone for a specific purpose.
+# The main_orchestrator.py should be the one calling parse_facebook_csv.
+
+# Example of how it might be called (for testing, normally not here):
+# if __name__ == '__main__':
+#     # This is just an example, provide a real path for testing
+#     test_csv_path = os.path.join(script_dir, \"../data/facebook-2025-05-16.csv\") 
+#     if os.path.exists(test_csv_path):
+#         listings = parse_facebook_csv(test_csv_path)
+#         print(f"Processed {len(listings)} listings from {test_csv_path}:")
+#         for listing in listings[:5]: # Print first 5
+#             print(listing)
+#     else:
+#         print(f"Test CSV {test_csv_path} not found.")
+
 
 if __name__ == '__main__':
-    # You can add test calls here if you run the script directly
-    # print(parse_title("2010 Honda civic"))
-    # print(parse_mileage("200K km"))
-    # print(parse_price("CA$1,234"))
-    print("Script finished. If run directly, this does nothing other than define functions.")
-    print(f"To process data, ensure '{facebook_csv_path}' and '{approved_vehicles_csv_path}' exist.")
-    print(f"Output will be appended to '{output_csv_path}'.") 
+    print("Starting Facebook data processing...")
+    # Check if dependent files exist before processing
+    # if not os.path.exists(facebook_csv_path):
+    #     print(f"CRITICAL: Facebook input file not found: {facebook_csv_path}")
+    if not os.path.exists(approved_vehicles_csv_path):
+        print(f"CRITICAL: Approved vehicles file not found: {approved_vehicles_csv_path}")
+    else:
+        print(f"Loading approved vehicles from: {approved_vehicles_csv_path}")
+        # Note: approved_vehicles set is loaded globally when script is imported/run.
+        # If this script is only run as main, the global loading is fine.
+        # If imported, ensure approved_vehicles is loaded before get_parsed_facebook_listings is called.
+        if not approved_vehicles: # Check if it was loaded successfully
+            print("Warning: Approved vehicles set is empty. Filtering by approval might not work as expected.")
+
+        # facebook_listings = get_parsed_facebook_listings()
+        # if facebook_listings:
+        #     print(f"Successfully parsed {len(facebook_listings)} Facebook listings.")
+        #     # For testing, print the first few listings:
+        #     # for i, item in enumerate(facebook_listings[:3]):
+        #     #     print(f"Listing {i+1}: {item}")
+        # else:
+        #     print("No Facebook listings were parsed.")
+
+    print("Facebook processing script finished.")
+    print(f"To use this data, call parse_facebook_csv() from another script.")
+    print(f"Ensure '{os.path.basename(approved_vehicles_csv_path)}' is in the '../data/' directory relative to this script for it to function.") 

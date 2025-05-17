@@ -22,6 +22,7 @@ def main():
     parser = argparse.ArgumentParser(description="Find the best used car deals")
     parser.add_argument("--limit", type=int, default=100, help="Maximum number of listings to scrape per site")
     parser.add_argument("--output", type=str, default="data/output.csv", help="Path to save output CSV")
+    parser.add_argument("--postal_code", type=str, default="L6M3S7", help="Postal code for search location (default: L6M3S7)")
     parser.add_argument("--method", type=str, default="playwright", choices=["selenium", "playwright", "crawl4ai", "scrapinggraph"], 
                         help="Scraping method to use for Facebook (defaults to playwright)")
     parser.add_argument("--sites", type=str, default="all", 
@@ -82,10 +83,30 @@ def main():
     # Initialize data processor
     data_processor = VehicleDataProcessor(reliability_data_path)
     
+    # --- Load Approved Vehicles for Scraper Filtering ---
+    approved_vehicles_for_scraping = []
+    # Use the same reliability_data_path that was confirmed or copied earlier
+    approved_vehicles_csv_for_scraping_path = reliability_data_path 
+    if approved_vehicles_csv_for_scraping_path.exists():
+        try:
+            df_approved = pd.read_csv(approved_vehicles_csv_for_scraping_path, usecols=['Make', 'Model', 'Year'])
+            df_approved.dropna(inplace=True)
+            df_approved['Make_lc'] = df_approved['Make'].str.lower().str.strip()
+            df_approved['Model_norm'] = df_approved['Model'].str.lower().str.replace('-', ' ', regex=False).str.strip()
+            # Ensure Year is integer
+            df_approved['Year'] = pd.to_numeric(df_approved['Year'], errors='coerce').dropna().astype(int)
+            approved_vehicles_for_scraping = list(zip(df_approved['Make_lc'], df_approved['Model_norm'], df_approved['Year']))
+            print(f"Loaded {len(approved_vehicles_for_scraping)} approved make/model/year combinations for scraper filtering.")
+        except Exception as e:
+            print(f"Warning: Could not load or process approved vehicles for scraper filtering from {approved_vehicles_csv_for_scraping_path}: {e}")
+    else:
+        print(f"Warning: Approved vehicles file {approved_vehicles_csv_for_scraping_path} not found. Scrapers will not pre-filter by make/model/year.")
+    # --- End Load Approved Vehicles ---
+
     # Determine which sites to scrape
     sites_to_scrape = args.sites.lower().split(',')
     if 'all' in sites_to_scrape:
-        sites_to_scrape = ['autotrader', 'cargurus', 'facebook']
+        sites_to_scrape = ['autotrader', 'cargurus'] # Exclude 'facebook'
     
     # Initialize scrapers based on the chosen method
     scrapers = []
@@ -111,10 +132,16 @@ def main():
     
     # Add selected scrapers
     if 'autotrader' in sites_to_scrape:
-        scrapers.append(AutoTraderPlaywrightScraper()) # USE PLAYWRIGHT VERSION
+        scrapers.append(AutoTraderPlaywrightScraper(
+            postal_code=args.postal_code, 
+            approved_vehicles_list=approved_vehicles_for_scraping
+        ))
     
     if 'cargurus' in sites_to_scrape:
-        scrapers.append(CarGurusScraper()) # This is still Selenium-based, can be updated later
+        scrapers.append(CarGurusScraper(
+            postal_code=args.postal_code,
+            approved_vehicles_list=approved_vehicles_for_scraping
+        ))
     
     if 'facebook' in sites_to_scrape:
         if facebook_scraper_class:
