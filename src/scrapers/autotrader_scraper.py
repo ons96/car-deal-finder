@@ -1,11 +1,9 @@
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
+import undetected_chromedriver as uc
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
-from webdriver_manager.chrome import ChromeDriverManager
 import time
 from tqdm import tqdm
 import random
@@ -66,15 +64,15 @@ class AutoTraderScraper(BaseScraper):
         print(f"AutoTrader Scraper initialized with URL: {self.search_url}")
 
     def _setup_driver(self):
-        """Setup and return a Selenium WebDriver."""
+        """Setup and return a Selenium WebDriver using undetected-chromedriver."""
         chrome_options = Options()
-        chrome_options.add_argument("--headless")
+        chrome_options.add_argument("--headless") # For undetected-chromedriver, sometimes removing --headless or using new headless (options.headless = "new") is needed if issues arise.
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
         chrome_options.add_argument(f"user-agent={self.headers['User-Agent']}")
         
-        service = Service(ChromeDriverManager().install())
-        driver = webdriver.Chrome(service=service, options=chrome_options)
+        # driver = webdriver.Chrome(service=service, options=chrome_options) # Old way
+        driver = uc.Chrome(options=chrome_options)
         return driver
         
     def scrape(self, limit=100):
@@ -108,7 +106,7 @@ class AutoTraderScraper(BaseScraper):
                 captcha_keywords = ["captcha", "verify you are human", "are you a robot", "security check"]
                 block_keywords = ["access denied", "blocked", "forbidden", "site unavailable"]
 
-                if any(keyword in page_title_lower for keyword in captcha_keywords) or
+                if any(keyword in page_title_lower for keyword in captcha_keywords) or \
                    any(keyword in page_source_lower for keyword in captcha_keywords):
                     print(f"CAPTCHA detected on {self.name}. Page title: {driver.title}. Stopping scrape for this site.")
                     if driver:
@@ -118,7 +116,7 @@ class AutoTraderScraper(BaseScraper):
                         print(f"Saved CAPTCHA page content to {filepath}")
                     break # Exit retry loop immediately
 
-                if any(keyword in page_title_lower for keyword in block_keywords) or
+                if any(keyword in page_title_lower for keyword in block_keywords) or \
                    any(keyword in page_source_lower for keyword in block_keywords):
                     print(f"Block detected on {self.name} (title: {driver.title}). Raising ConnectionError for retry.")
                     raise ConnectionError("Block/Rate limit detected based on page content")

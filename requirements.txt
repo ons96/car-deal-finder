@@ -13,6 +13,7 @@ playwright==1.44.0
 beautifulsoup4==4.12.2
 webdriver-manager==4.0.1
 # scrapinggraph-ai==0.1.5  # commented out because unavailable on PyPI
+undetected-chromedriver==3.5.5
 
 # Data processing and visualization
 matplotlib==3.8.2

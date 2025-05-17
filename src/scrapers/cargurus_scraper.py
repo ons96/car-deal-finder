@@ -38,14 +38,18 @@ class CarGurusScraper(BaseScraper):
         self.approved_vehicles = approved_vehicles_list if approved_vehicles_list else []
 
         # Dynamically build the search URL
-        # Parameters: zip, minPrice, maxPrice, distance (likely miles)
-        # sortType=DEAL_SCORE&sortDir=ASC is their default for good deals
-        # inventorySearchWidgetType=AUTO is standard
-        # shopByTypes=NEAR_BY seems relevant for distance based search
+        # Old URL structure:
+        # f"{self.base_url}/Cars/searchResults.action?"
+        # f"zip={self.postal_code}&inventorySearchWidgetType=AUTO&sortDir=ASC&sortType=DEAL_SCORE"
+        # f"&shopByTypes=NEAR_BY&minPrice=500&maxPrice={self.MAX_PRICE}&distance={self.SEARCH_RADIUS_MILES}"
+        
+        # New URL structure based on user's finding for potentially more listings:
+        # Parameters like minPrice, maxPrice, distance are retained.
+        # sourceContext is from user's URL. entitySelectingHelper.selectedEntity is kept empty as per original scraper comments.
         self.search_url = (
-            f"{self.base_url}/Cars/searchResults.action?"
-            f"zip={self.postal_code}&inventorySearchWidgetType=AUTO&sortDir=ASC&sortType=DEAL_SCORE"
-            f"&shopByTypes=NEAR_BY&minPrice=500&maxPrice={self.MAX_PRICE}&distance={self.SEARCH_RADIUS_MILES}"
+            f"{self.base_url}/Cars/inventorylisting/viewDetailsFilterViewInventoryListing.action?"
+            f"sourceContext=carGurusHomePageModel&zip={self.postal_code.lower()}"
+            f"&minPrice=500&maxPrice={self.MAX_PRICE}&distance={self.SEARCH_RADIUS_MILES}"
         )
         
     def _setup_driver(self):
@@ -181,6 +185,7 @@ class CarGurusScraper(BaseScraper):
                     raise ConnectionError("Listings not found in JSON, attempting retry.")
 
                 print(f"Found {len(json_listings)} items in JSON data. Processing up to limit ({limit})...")
+                print(f"--> Total raw listings from CarGurus source before any local filtering: {len(json_listings)}")
 
                 for item in tqdm(json_listings, desc="Processing JSON items"):
                     if len(listings) >= limit:
