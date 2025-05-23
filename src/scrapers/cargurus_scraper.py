@@ -1,15 +1,10 @@
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
-from webdriver_manager.chrome import ChromeDriverManager
+import playwright.async_api as pw_async
+from bs4 import BeautifulSoup
 import time
 from tqdm import tqdm
+import random
 import json
-import random # Added for random delays
+from curl_cffi import requests as curl_requests
 
 from src.scrapers.base_scraper import BaseScraper
 
@@ -21,9 +16,6 @@ class CarGurusScraper(BaseScraper):
     MAX_PRICE = 20000
     SEARCH_RADIUS_KM = 250
     SEARCH_RADIUS_MILES = 155 # Approx 250km, CarGurus might use miles
-    # Confirmed CarGurus uses entitySelectingHelper.selectedEntity= for make/model and specific year params
-    # However, to avoid complexity of mapping all approved models to CarGurus entity IDs and managing multiple queries,
-    # we will filter by price/location in URL, then filter by approved make/model/year in memory post-scrape.
 
     # Constants for retry mechanism
     MAX_RETRIES = 3
@@ -37,282 +29,428 @@ class CarGurusScraper(BaseScraper):
         self.postal_code = postal_code.replace(" ", "") # Ensure no spaces
         self.approved_vehicles = approved_vehicles_list if approved_vehicles_list else []
 
-        # Dynamically build the search URL
-        # Old URL structure:
-        # f"{self.base_url}/Cars/searchResults.action?"
-        # f"zip={self.postal_code}&inventorySearchWidgetType=AUTO&sortDir=ASC&sortType=DEAL_SCORE"
-        # f"&shopByTypes=NEAR_BY&minPrice=500&maxPrice={self.MAX_PRICE}&distance={self.SEARCH_RADIUS_MILES}"
-        
-        # New URL structure based on user's finding for potentially more listings:
-        # Parameters like minPrice, maxPrice, distance are retained.
-        # sourceContext is from user's URL. entitySelectingHelper.selectedEntity is kept empty as per original scraper comments.
+        # Build the search URL
         self.search_url = (
             f"{self.base_url}/Cars/inventorylisting/viewDetailsFilterViewInventoryListing.action?"
             f"sourceContext=carGurusHomePageModel&zip={self.postal_code.lower()}"
             f"&minPrice=500&maxPrice={self.MAX_PRICE}&distance={self.SEARCH_RADIUS_MILES}"
         )
+
+    async def _setup_playwright_page(self, playwright: pw_async.Playwright):
+        """Setup and return a Playwright browser page and context with enhanced anti-detection measures."""
+        # Launch browser with additional arguments to appear more like a real browser
+        browser = await playwright.chromium.launch(
+            headless=True,
+            args=[
+                '--disable-blink-features=AutomationControlled',
+                '--disable-features=IsolateOrigins,site-per-process',
+                '--disable-site-isolation-trials',
+                '--disable-web-security',
+                '--disable-features=BlockInsecurePrivateNetworkRequests',
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-accelerated-2d-canvas',
+                '--no-first-run',
+                '--no-zygote',
+                '--disable-gpu',
+                '--window-size=1920,1080',
+            ]
+        )
         
-    def _setup_driver(self):
-        """Setup and return a Selenium WebDriver."""
-        chrome_options = Options()
-        chrome_options.add_argument("--headless=new")
-        # To run non-headless for debugging, comment out the line above and uncomment the line below
-        # chrome_options.headless = False
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument(f"user-agent={self.headers['User-Agent']}")
-        
-        service = Service(ChromeDriverManager().install())
-        driver = webdriver.Chrome(service=service, options=chrome_options)
-        print("CarGurus WebDriver setup complete.")
-        return driver
-        
-    def scrape(self, limit=100):
+        # Create a more realistic browser context
+        context = await browser.new_context(
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            viewport={'width': 1920, 'height': 1080},
+            device_scale_factor=1,
+            has_touch=False,
+            is_mobile=False,
+            locale='en-CA',
+            timezone_id='America/Toronto',
+            geolocation={'latitude': 43.6532, 'longitude': -79.3832},  # Toronto coordinates
+            permissions=['geolocation'],
+            java_script_enabled=True,
+            extra_http_headers={
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-CA,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none',
+                'Sec-Fetch-User': '?1',
+                'Cache-Control': 'max-age=0',
+            }
+        )
+
+        # Add stealth scripts to avoid detection
+        page = await context.new_page()
+        await page.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => undefined
+            });
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => [1, 2, 3, 4, 5]
+            });
+            Object.defineProperty(navigator, 'languages', {
+                get: () => ['en-CA', 'en']
+            });
+            window.chrome = {
+                runtime: {}
+            };
+        """)
+
+        return browser, context, page
+
+    async def scrape(self, limit=100):
         """
-        Scrape car listings from CarGurus.ca by parsing JSON data.
-        Handles retries for network issues/blocks and detects CAPTCHAs.
-        
-        Args:
-            limit (int): Maximum number of listings to scrape
-            
-        Returns:
-            list: List of car listing dictionaries
+        Scrape car listings from CarGurus.ca using Playwright with enhanced anti-detection.
         """
-        print(f"Scraping {self.name} (expecting JSON response)...")
+        print(f"Scraping {self.name} with enhanced Playwright configuration...")
         listings = []
-        retries = 0
         
+        retries = 0
         while retries <= self.MAX_RETRIES:
-            driver = None # Initialize driver to None for each attempt
+            browser = None
+            context = None 
+            page = None
+            playwright_instance = None
+            trace_path = f"cargurus_playwright_trace_attempt_{retries + 1}.zip"
+            tracing_started_this_attempt = False
+            
             try:
-                driver = self._setup_driver()
-                driver.get(self.search_url)
-                time.sleep(random.uniform(5, 10)) # Randomize initial wait
+                playwright_instance = await pw_async.async_playwright().start()
+                browser, context, page = await self._setup_playwright_page(playwright_instance)
                 
-                page_content = driver.page_source.lower() # Lowercase for easier keyword matching
+                print(f"Starting Playwright trace for attempt {retries + 1}")
+                await context.tracing.start(screenshots=True, snapshots=True, sources=True)
+                tracing_started_this_attempt = True
 
-                # CAPTCHA detection
-                captcha_keywords = ["captcha", "verify you are human", "recaptcha", "are you a robot"]
-                if any(keyword in page_content for keyword in captcha_keywords):
-                    print(f"CAPTCHA detected on {self.name}. Stopping scrape for this site.")
-                    if driver:
-                        with open(f"cargurus_captcha_page_{time.strftime('%Y%m%d_%H%M%S')}.html", "w", encoding="utf-8") as f:
-                            f.write(driver.page_source) # Save original case page
-                        print("Saved CAPTCHA page content.")
-                    break # Exit retry loop and return collected listings
+                # Add random delays between actions to appear more human-like
+                def random_delay():
+                    time.sleep(random.uniform(2, 5))
 
-                data = None
-                try:
-                    # Try to find JSON within <pre> tags first
-                    pre_element = driver.find_element(By.TAG_NAME, "pre")
-                    if pre_element:
-                        pre_tag_content = pre_element.text
-                        if pre_tag_content.strip(): # Ensure pre_tag_content is not empty
-                            data = json.loads(pre_tag_content)
-                            print("Successfully parsed JSON from <pre> tag.")
-                        else:
-                            print("Found <pre> tag, but it was empty.")
-                    else: # Should not happen if find_element doesn't raise exception
-                        print("No <pre> tag found by Selenium (unexpected).")
-                        
-                except (NoSuchElementException, json.JSONDecodeError) as e_pre:
-                    print(f"Could not parse JSON from <pre> tag (Error: {e_pre}). Trying full page source.")
-                    # If no <pre> tag or it doesn't contain valid JSON, try the whole page source
+                print(f"Attempting to load URL: {self.search_url}")
+                await page.goto(self.search_url, timeout=60000, wait_until="networkidle")
+                random_delay()
+
+                # Add a longer delay after page load to ensure dynamic content is loaded
+                print("Waiting for dynamic content to load...")
+                await page.wait_for_timeout(5000)  # 5 second delay
+
+                # Enhanced CAPTCHA detection
+                captcha_indicators = [
+                    "div[class*='captcha']",
+                    "div[class*='challenge']",
+                    "div[class*='security-check']",
+                    "div[class*='bot-detection']",
+                    "div[class*='incapsula']",
+                    "div[class*='cloudflare']",
+                    "iframe[src*='captcha']",
+                    "iframe[src*='challenge']",
+                    "iframe[src*='security']",
+                    "iframe[src*='incapsula']",
+                    "iframe[src*='cloudflare']",
+                    "form[action*='captcha']",
+                    "form[action*='challenge']",
+                    "form[action*='security']",
+                    "form[action*='incapsula']",
+                    "form[action*='cloudflare']"
+                ]
+
+                for indicator in captcha_indicators:
+                    if await page.query_selector(indicator):
+                        print(f"CAPTCHA detected with indicator: {indicator}")
+                        filepath = f"cargurus_captcha_page_{time.strftime('%Y%m%d_%H%M%S')}.html"
+                        with open(filepath, "w", encoding="utf-8") as f:
+                            f.write(await page.content())
+                        raise ConnectionError("CAPTCHA detected")
+
+                # Enhanced listing selectors for CarGurus
+                listing_selectors = [
+                    # Primary selectors (most specific)
+                    "div[data-test='listing-card']",
+                    "div[data-test='inventory-listing']",
+                    "div[data-test='vehicle-card']",
+                    "div[data-test='car-listing']",
+                    # Class-based selectors (more general)
+                    "div[class*='listing-card']",
+                    "div[class*='listing-item']",
+                    "div[class*='result-item']",
+                    "div[class*='car-listing']",
+                    "div[class*='listing']",
+                    "div[class*='car-card']",
+                    "div[class*='vehicle-card']",
+                    "div[class*='inventory-listing']",
+                    "div[class*='inventory-item']",
+                    # Additional selectors based on CarGurus structure
+                    "div[class*='cg-listing']",
+                    "div[class*='cg-card']",
+                    "div[class*='cg-vehicle']",
+                    "div[class*='cg-inventory']",
+                    "div[class*='cg-result']",
+                    "div[class*='cg-item']",
+                    # Fallback selectors
+                    "div[class*='listing-container'] > div",
+                    "div[class*='results-container'] > div",
+                    "div[class*='inventory-container'] > div",
+                    "div[class*='vehicle-container'] > div"
+                ]
+
+                # Try to find the listing container with enhanced debugging
+                listing_container = None
+                for selector in listing_selectors:
                     try:
-                        # Use the original page_content for JSON parsing, not the lowercased one
-                        data = json.loads(driver.page_source) 
-                        print("Successfully parsed JSON from full page source.")
-                    except json.JSONDecodeError as e_full:
-                        print(f"Failed to decode JSON from page source. Error: {e_full}")
-                        
-                        # Block/Rate Limit detection (if JSON parsing fails)
-                        block_keywords = ["access denied", "blocked", "too many requests", "rate limit"]
-                        if any(keyword in page_content for keyword in block_keywords):
-                            print(f"Potential block/rate limit detected on {self.name} based on keywords.")
-                            raise ConnectionError("Block/Rate limit detected") # Will be caught by outer try's ConnectionError
-                        
-                        print(f"Page content (first 500 chars): {driver.page_source[:500]}")
-                        with open(f"cargurus_error_page_{time.strftime('%Y%m%d_%H%M%S')}.html", "w", encoding="utf-8") as f:
-                            f.write(driver.page_source)
-                        print("Saved non-JSON page content to error file.")
-                        if retries >= self.MAX_RETRIES:
-                            print("Max retries reached for JSON parsing failure.")
-                            break # Exit retry loop
-                        else:
-                            # This path (JSON error not identified as block) might not need a long retry.
-                            # However, keeping consistent retry logic for now.
-                            raise ConnectionError("JSON decode error, attempting retry.")
+                        print(f"Trying selector: {selector}")
+                        listing_container = await page.wait_for_selector(selector, timeout=10000)
+                        if listing_container:
+                            print(f"Found listing container with selector: {selector}")
+                            # Verify we can find actual listings within this container
+                            listings_found = await page.query_selector_all(f"{selector}")
+                            if listings_found:
+                                print(f"Verified {len(listings_found)} listings found with selector: {selector}")
+                                break
+                            else:
+                                print(f"Selector {selector} found container but no listings within it")
+                                listing_container = None
+                    except Exception as e:
+                        print(f"Selector {selector} failed: {str(e)}")
+                        continue
 
+                if not listing_container:
+                    # Save the page content for debugging
+                    filepath = f"cargurus_no_listings_page_{time.strftime('%Y%m%d_%H%M%S')}.html"
+                    with open(filepath, "w", encoding="utf-8") as f:
+                        f.write(await page.content())
+                    print(f"Saved page content to {filepath} for debugging")
+                    raise ConnectionError("No listing container found")
 
-                if data is None: # If data is still None after trying both methods
-                    print("Failed to extract JSON data from page using any method.")
-                    # This could be a block if the page is not what's expected.
-                    if len(driver.page_source) < 500: # Arbitrary small size, might indicate an error page
-                        print(f"Page source is very small ({len(driver.page_source)} bytes), might be an error/empty page.")
+                # Process listings with enhanced selectors
+                current_page = 1
+                while len(listings) < limit:
+                    # Extract listings from current page with enhanced selectors
+                    listing_elements = await page.query_selector_all(
+                        "div[data-test='listing-card'], "
+                        "div[data-test='inventory-listing'], "
+                        "div[data-test='vehicle-card'], "
+                        "div[data-test='car-listing'], "
+                        "div[class*='listing-card'], "
+                        "div[class*='listing-item'], "
+                        "div[class*='result-item'], "
+                        "div[class*='car-listing'], "
+                        "div[class*='listing'], "
+                        "div[class*='car-card'], "
+                        "div[class*='vehicle-card'], "
+                        "div[class*='inventory-listing'], "
+                        "div[class*='inventory-item'], "
+                        "div[class*='cg-listing'], "
+                        "div[class*='cg-card'], "
+                        "div[class*='cg-vehicle'], "
+                        "div[class*='cg-inventory'], "
+                        "div[class*='cg-result'], "
+                        "div[class*='cg-item']"
+                    )
                     
-                    # Consider this a retryable scenario
-                    raise ConnectionError("No JSON data extracted, attempting retry.")
+                    if not listing_elements:
+                        print("No more listings found")
+                        # Save the page content for debugging
+                        filepath = f"cargurus_no_listings_page_{time.strftime('%Y%m%d_%H%M%S')}.html"
+                        with open(filepath, "w", encoding="utf-8") as f:
+                            f.write(await page.content())
+                        print(f"Saved page content to {filepath} for debugging")
+                        break
 
-                # --- JSON Parsing Logic ---
-                json_listings = []
-                if isinstance(data, list):
-                    json_listings = data
-                elif isinstance(data, dict):
-                    possible_list_keys = ['listings', 'results', 'data', 'items', 'vehicles', 'cars', 'searchResponse', 'searchResult', 'dataFeed']
-                    for key in possible_list_keys:
-                        if key in data and isinstance(data[key], list):
-                            json_listings = data[key]
-                            print(f"Found listings under key: '{key}'")
-                            break
-                        elif key in data and isinstance(data[key], dict):
-                            for sub_key in possible_list_keys:
-                                if sub_key in data[key] and isinstance(data[key][sub_key], list):
-                                    json_listings = data[key][sub_key]
-                                    print(f"Found listings under nested key: '{key}.{sub_key}'")
-                                    break
-                            if json_listings: break
-                    if not json_listings and 'searchResults' in data and 'listings' in data['searchResults']:
-                        json_listings = data['searchResults']['listings']
-                        print("Found listings under 'searchResults.listings'")
+                    print(f"Found {len(listing_elements)} listings on page {current_page}")
 
-                if not json_listings:
-                    print("Could not find a list of listings in the parsed JSON.")
-                    print(f"JSON data (first 500 chars if dict, or type): {str(data)[:500] if isinstance(data, dict) else type(data)}")
-                    with open(f"cargurus_parsed_data_{time.strftime('%Y%m%d_%H%M%S')}.json", "w", encoding="utf-8") as f:
-                        json.dump(data, f, indent=4)
-                    print("Saved parsed JSON data for inspection.")
-                    # This might also be a reason to retry, as the page structure might have temporarily changed or been an error page.
-                    raise ConnectionError("Listings not found in JSON, attempting retry.")
+                    for element in listing_elements:
+                        try:
+                            # Extract data using more robust selectors
+                            title_element = await element.query_selector(
+                                "h3, h4, .title, [class*='title'], "
+                                "[data-test*='title'], "
+                                "[class*='vehicle-title'], "
+                                "[class*='car-title']"
+                            )
+                            title = await title_element.text_content() if title_element else None
+                            if title:
+                                title = title.strip()
+                            
+                            price_text_element = await element.query_selector(
+                                "[class*='price'], "
+                                "[data-test*='price'], "
+                                "[class*='listing-price'], "
+                                "[class*='vehicle-price']"
+                            )
+                            price_text = await price_text_element.text_content() if price_text_element else None
+                            if price_text:
+                                price_text = price_text.strip()
+                            price = self._extract_price(price_text) if price_text else None
+                            
+                            # Extract year, make, model from title
+                            year = self._extract_year(title) if title else None
+                            make, model = self._extract_make_model(title) if title else (None, None)
+                            
+                            # Extract mileage with more robust selectors
+                            mileage_text_element = await element.query_selector(
+                                "[class*='mileage'], "
+                                "[data-test*='mileage'], "
+                                "[class*='listing-mileage'], "
+                                "[class*='vehicle-mileage'], "
+                                "[class*='odometer']"
+                            )
+                            mileage_text = await mileage_text_element.text_content() if mileage_text_element else None
+                            if mileage_text:
+                                mileage_text = mileage_text.strip()
+                            mileage = self._extract_mileage(mileage_text) if mileage_text else None
+                            
+                            # Extract URL with more robust selectors
+                            url_element = await element.query_selector(
+                                "a[href*='/Cars/inventorylisting/viewDetailsFilterViewInventoryListing.action'], "
+                                "a[href*='/Cars/inventorylisting/viewDetailsFilterViewInventoryListing.action'], "
+                                "a[href*='/Cars/inventorylisting/viewDetailsFilterViewInventoryListing.action'], "
+                                "a[class*='listing-link'], "
+                                "a[class*='vehicle-link']"
+                            )
+                            url = await url_element.get_attribute("href") if url_element else None
+                            if url and not url.startswith("http"):
+                                url = self.base_url + url
 
-                print(f"Found {len(json_listings)} items in JSON data. Processing up to limit ({limit})...")
-                print(f"--> Total raw listings from CarGurus source before any local filtering: {len(json_listings)}")
+                            # Extract body type with more robust selectors
+                            body_type = "unknown"
+                            body_type_text_element = await element.query_selector(
+                                "[class*='body-type'], "
+                                "[data-test*='body-type'], "
+                                "[class*='vehicle-type'], "
+                                "[class*='car-type']"
+                            )
+                            body_type_text = await body_type_text_element.text_content() if body_type_text_element else None
+                            if body_type_text:
+                                body_type_text = body_type_text.strip().lower()
+                                if "sedan" in body_type_text: body_type = "sedan"
+                                elif "coupe" in body_type_text: body_type = "coupe"
+                                elif "hatchback" in body_type_text: body_type = "hatchback"
+                                elif "suv" in body_type_text: body_type = "suv"
+                                elif "truck" in body_type_text: body_type = "truck"
+                                elif "van" in body_type_text: body_type = "van"
 
-                for item in tqdm(json_listings, desc="Processing JSON items"):
+                            # Apply approved vehicles filter
+                            is_approved = False
+                            if self.approved_vehicles:
+                                if year and make and model:
+                                    scraped_make_lc = str(make).lower().strip()
+                                    scraped_model_norm = str(model).lower().replace('-', ' ').strip()
+                                    scraped_year_int = int(year)
+
+                                    for approved_make, approved_model, approved_year in self.approved_vehicles:
+                                        if (scraped_make_lc == approved_make and
+                                            scraped_year_int == approved_year and
+                                            scraped_model_norm.startswith(approved_model)):
+                                            is_approved = True
+                                            break
+                            else:
+                                is_approved = True
+
+                            if not is_approved:
+                                continue
+
+                            if not all([url, year, make, model, price is not None, mileage is not None]):
+                                print(f"Skipping item due to missing core data: Title='{title}', URL='{url}'")
+                                continue
+
+                            listing_data = {
+                                'url': url,
+                                'title': title,
+                                'year': year,
+                                'make': make,
+                                'model': model,
+                                'price': price,
+                                'mileage': mileage,
+                                'body_type': body_type,
+                                'source': self.name
+                            }
+                            listings.append(listing_data)
+                        
+                            if len(listings) >= limit:
+                                break
+
+                        except Exception as e:
+                            print(f"Error processing listing: {str(e)}")
+                            continue
+                    
                     if len(listings) >= limit:
                         break
-                    
+
+                    # Try to go to next page
                     try:
-                        # Extract data - field names based on debugged JSON structure
-                        title = item.get('listingTitle', '')
-                        year = item.get('carYear')
-                        make = item.get('makeName', '')
-                        model = item.get('modelName', '')
-                        price = item.get('price') # This is a float
-                        
-                        # Mileage: prefer the direct numeric field if available
-                        mileage_val = item.get('mileage') 
-                        if mileage_val is None and 'unitMileage' in item and isinstance(item['unitMileage'], dict):
-                            mileage_val = item['unitMileage'].get('value')
-                        mileage = int(mileage_val) if mileage_val is not None else None
-                        
-                        # Construct URL using the item ID
-                        item_id = item.get('id')
-                        url = None
-                        if item_id:
-                            # This URL structure is a common one for CarGurus, might need adjustment if it doesn't lead to a user-viewable page.
-                            # Using the viewPrintableDeal.action variant as it was in the previous attempt.
-                            url = f"{self.base_url}/Cars/inventorylisting/viewPrintableDeal.action?inventoryListing={item_id}&sourceContext=carGurusHomePageModel"
-                        
-                        body_type_str = item.get('bodyTypeName', '')
-                        body_type = None
-                        # Standardize body type
-                        bt_lower = body_type_str.lower()
-                        if "sedan" in bt_lower: body_type = "sedan"
-                        elif "coupe" in bt_lower: body_type = "coupe"
-                        elif "hatchback" in bt_lower: body_type = "hatchback"
-                        elif "suv" in bt_lower or "sport utility" in bt_lower : body_type = "suv"
-                        elif "truck" in bt_lower: body_type = "truck"
-                        elif "van" in bt_lower: body_type = "van"
-                        elif "minivan" in bt_lower: body_type = "van"
-                        else: body_type = "sedan" # Default if not matched
-
-                        # --- Apply Make/Model/Year Filter ---
-                        is_approved = False
-                        if self.approved_vehicles:
-                            scraped_make_lc = str(make).lower().strip()
-                            scraped_model_norm = str(model).lower().replace('-', ' ').strip()
-                            scraped_year_int = int(year) if year is not None else 0
-
-                            for approved_make, approved_model, approved_year in self.approved_vehicles:
-                                if (scraped_make_lc == approved_make and 
-                                    scraped_year_int == approved_year and 
-                                    scraped_model_norm.startswith(approved_model)):
-                                    is_approved = True
-                                    break
+                        next_button = await page.query_selector("button[aria-label*='Next'], a[aria-label*='Next'], [class*='next']")
+                        if next_button and await next_button.is_visible():
+                            await next_button.click()
+                            random_delay()
+                            current_page += 1
                         else:
-                            is_approved = True # If no approved list, don't filter
+                            print("No more pages available")
+                            break
+                    except Exception as e:
+                        print(f"Error navigating to next page: {str(e)}")
+                        break
 
-                        if not is_approved:
-                            # print(f"Skipping unapproved vehicle: {year} {make} {model}")
-                            continue
-                        # --- End Filter ---
+                print(f"Finished scraping {len(listings)} listings")
+                break
 
-                        # Basic validation
-                        if not all([url, year, make, model, price is not None, mileage is not None]):
-                            print(f"Skipping item due to missing core data after mapping: Year-{year}, Make-{make}, Model-{model}, Price-{price}, Mileage-{mileage}, URL-{url}. Original Title: '{title}'")
-                            # print(f"  Full item dump: {json.dumps(item, indent=2)}") # For deeper debugging if needed
-                            continue
-
-                        listing_data = {
-                            'url': url,
-                            'title': title,
-                            'year': int(year) if year is not None else None,
-                            'make': str(make),
-                            'model': str(model),
-                            'price': float(price) if price is not None else None,
-                            'mileage': int(mileage) if mileage is not None else None,
-                            'body_type': body_type,
-                            'source': self.name
-                        }
-                        listings.append(listing_data)
-                    
-                    except Exception as e_item: # Renamed 'e' to 'e_item' to avoid conflict if 'e' is used in outer scope
-                        print(f"Error processing a JSON item: {e_item}. Item: {str(item)[:200]}...") 
-                        # Continue to the next item even if one fails
-                        continue
-                
-                print(f"Successfully scraped {len(listings)} listings on this attempt.")
-                break # Successful scrape, exit retry loop
-
-            except (TimeoutException, ConnectionError, NoSuchElementException) as e: # Catch more specific errors for retrying
+            except (pw_async.TimeoutError, ConnectionError) as e:
                 print(f"Error during scrape attempt {retries + 1}/{self.MAX_RETRIES + 1}: {str(e)}")
+                if tracing_started_this_attempt and context:
+                    await context.tracing.stop(path=trace_path)
+                    print(f"Saved trace to {trace_path}")
+                
                 retries += 1
                 if retries <= self.MAX_RETRIES:
-                    # Exponential backoff with jitter
                     delay = min(self.MAX_RETRY_DELAY_S, self.INITIAL_RETRY_DELAY_S * (2 ** (retries - 1)))
-                    jitter = delay * 0.2 * random.random() # Add up to 20% jitter
+                    jitter = delay * 0.2 * random.random()
                     actual_delay = delay + jitter
                     print(f"Retrying in {actual_delay:.2f} seconds...")
                     time.sleep(actual_delay)
                 else:
-                    print(f"Max retries reached for {self.name}. Moving on.")
-                    # Save page source if it was a connection or parsing issue on last attempt
-                    if driver and 'page_content' not in locals() or (isinstance(e, ConnectionError) or isinstance(e, NoSuchElementException)):
-                         try:
-                            error_page_source = driver.page_source
-                            with open(f"cargurus_final_error_page_{time.strftime('%Y%m%d_%H%M%S')}.html", "w", encoding="utf-8") as f:
-                                f.write(error_page_source)
-                            print("Saved page source at point of final error.")
-                         except Exception as e_save:
-                            print(f"Could not save page source during final error handling: {e_save}")
-                    break # Exit retry loop
+                    print(f"Max retries reached for {self.name}")
+                    break
             
             except Exception as e:
-                print(f"Major unexpected error in CarGurus JSON scraping process: {str(e)}")
-                if driver:
-                    try:
-                        error_page_source = driver.page_source
-                        with open(f"cargurus_major_error_page_{time.strftime('%Y%m%d_%H%M%S')}.html", "w", encoding="utf-8") as f:
-                            f.write(error_page_source)
-                        print("Saved page source at point of major unexpected error.")
-                    except Exception as e_save:
-                        print(f"Could not save page source during major error handling: {e_save}")
-                break # Exit retry loop for major unexpected errors
+                print(f"Unexpected error: {str(e)}")
+                if tracing_started_this_attempt and context:
+                    await context.tracing.stop(path=trace_path)
+                    print(f"Saved trace to {trace_path}")
+                break
         
             finally:
-                if driver:
-                    driver.quit()
-                    print(f"WebDriver quit for attempt {retries + 1} if it was active.") # Clarified message
-                
-        print(f"Scraped a total of {len(listings)} listings from {self.name} after all attempts.")
+                if tracing_started_this_attempt and context:
+                    await context.tracing.stop(path=trace_path)
+                if browser:
+                    await browser.close()
+                if playwright_instance:
+                    await playwright_instance.stop()
+
+        print(f"Scraped a total of {len(listings)} listings from {self.name}")
         return listings 
+
+    def _extract_make_model(self, title):
+        """Extract make and model from title string."""
+        if not title:
+            return None, None
+        year = self._extract_year(title)
+        if year:
+            title_no_year = title.replace(str(year), "").strip()
+            parts = title_no_year.split()
+            if len(parts) >= 2:
+                make = parts[0]
+                model = " ".join(parts[1:])
+                return make, model
+        return None, None
+
+    def _extract_mileage(self, mileage_text):
+        """Extract numeric mileage from mileage string."""
+        if not mileage_text:
+            return None
+        import re
+        match = re.search(r'[,\d]+', mileage_text.replace(',', '').lower().replace('km', '').strip())
+        return int(match.group(0)) if match else None

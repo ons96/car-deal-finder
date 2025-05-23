@@ -1,4 +1,4 @@
-import undetected_chromedriver as uc
+import playwright.async_api as pw_async
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -8,6 +8,8 @@ import time
 from tqdm import tqdm
 import random
 import json
+from curl_cffi import requests as curl_requests
+from bs4 import BeautifulSoup
 
 from src.scrapers.base_scraper import BaseScraper
 
@@ -63,137 +65,448 @@ class AutoTraderScraper(BaseScraper):
         )
         print(f"AutoTrader Scraper initialized with URL: {self.search_url}")
 
-    def _setup_driver(self):
-        """Setup and return a Selenium WebDriver using undetected-chromedriver."""
-        chrome_options = Options()
-        chrome_options.add_argument("--headless") # For undetected-chromedriver, sometimes removing --headless or using new headless (options.headless = "new") is needed if issues arise.
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument(f"user-agent={self.headers['User-Agent']}")
+    async def _setup_playwright_page(self, playwright: pw_async.Playwright):
+        """Setup and return a Playwright browser page and context with enhanced anti-detection measures."""
+        # Launch browser with additional arguments to appear more like a real browser
+        browser = await playwright.chromium.launch(
+            headless=True,
+            args=[
+                '--disable-blink-features=AutomationControlled',
+                '--disable-features=IsolateOrigins,site-per-process',
+                '--disable-site-isolation-trials',
+                '--disable-web-security',
+                '--disable-features=BlockInsecurePrivateNetworkRequests',
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-accelerated-2d-canvas',
+                '--no-first-run',
+                '--no-zygote',
+                '--disable-gpu',
+                '--window-size=1920,1080',
+                '--disable-extensions',
+                '--disable-component-extensions-with-background-pages',
+                '--disable-default-apps',
+                '--mute-audio',
+                '--no-default-browser-check',
+                '--no-experiments',
+                '--disable-features=site-per-process',
+                '--disable-features=TranslateUI',
+                '--disable-features=BlinkGenPropertyTrees',
+                '--disable-features=InterestCohort',
+                '--disable-features=UserAgentClientHint',
+                '--disable-features=NetworkService',
+                '--disable-features=NetworkServiceInProcess',
+                '--disable-features=NetworkServiceInProcess2',
+                '--disable-features=NetworkServiceInProcess3',
+                '--disable-features=NetworkServiceInProcess4',
+                '--disable-features=NetworkServiceInProcess5',
+                '--disable-features=NetworkServiceInProcess6',
+                '--disable-features=NetworkServiceInProcess7',
+                '--disable-features=NetworkServiceInProcess8',
+                '--disable-features=NetworkServiceInProcess9',
+                '--disable-features=NetworkServiceInProcess10',
+                '--disable-features=NetworkServiceInProcess11',
+                '--disable-features=NetworkServiceInProcess12',
+                '--disable-features=NetworkServiceInProcess13',
+                '--disable-features=NetworkServiceInProcess14',
+                '--disable-features=NetworkServiceInProcess15',
+                '--disable-features=NetworkServiceInProcess16',
+                '--disable-features=NetworkServiceInProcess17',
+                '--disable-features=NetworkServiceInProcess18',
+                '--disable-features=NetworkServiceInProcess19',
+                '--disable-features=NetworkServiceInProcess20',
+            ]
+        )
         
-        # driver = webdriver.Chrome(service=service, options=chrome_options) # Old way
-        driver = uc.Chrome(options=chrome_options)
-        return driver
-        
-    def scrape(self, limit=100):
-        """
-        Scrape car listings from AutoTrader.ca.
-        Includes retry logic, CAPTCHA/block detection, and approved vehicle filtering.
-        
-        Args:
-            limit (int): Maximum number of listings to scrape
+        # Create a more realistic browser context with additional settings
+        context = await browser.new_context(
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            viewport={'width': 1920, 'height': 1080},
+            device_scale_factor=1,
+            has_touch=False,
+            is_mobile=False,
+            locale='en-CA',
+            timezone_id='America/Toronto',
+            geolocation={'latitude': 43.6532, 'longitude': -79.3832},  # Toronto coordinates
+            permissions=['geolocation'],
+            java_script_enabled=True,
+            extra_http_headers={
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+                'Accept-Language': 'en-CA,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none',
+                'Sec-Fetch-User': '?1',
+                'Cache-Control': 'max-age=0',
+                'Sec-Ch-Ua': '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+                'Sec-Ch-Ua-Mobile': '?0',
+                'Sec-Ch-Ua-Platform': '"Windows"',
+                'DNT': '1',
+            }
+        )
+
+        # Add stealth scripts to avoid detection
+        page = await context.new_page()
+        await page.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => undefined
+            });
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => [1, 2, 3, 4, 5]
+            });
+            Object.defineProperty(navigator, 'languages', {
+                get: () => ['en-CA', 'en']
+            });
+            Object.defineProperty(navigator, 'platform', {
+                get: () => 'Win32'
+            });
+            Object.defineProperty(navigator, 'hardwareConcurrency', {
+                get: () => 8
+            });
+            Object.defineProperty(navigator, 'deviceMemory', {
+                get: () => 8
+            });
+            Object.defineProperty(navigator, 'maxTouchPoints', {
+                get: () => 0
+            });
+            Object.defineProperty(navigator, 'vendor', {
+                get: () => 'Google Inc.'
+            });
+            Object.defineProperty(navigator, 'appVersion', {
+                get: () => '5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+            });
+            window.chrome = {
+                runtime: {},
+                loadTimes: function() {},
+                csi: function() {},
+                app: {}
+            };
+            Object.defineProperty(window, 'chrome', {
+                get: () => ({
+                    runtime: {},
+                    loadTimes: function() {},
+                    csi: function() {},
+                    app: {}
+                })
+            });
+        """)
+
+        # Set more realistic viewport and user agent
+        await page.set_viewport_size({"width": 1920, "height": 1080})
+        await page.set_extra_http_headers({
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            "DNT": "1"
+        })
+
+        # Add random mouse movements
+        await page.mouse.move(random.randint(0, 1920), random.randint(0, 1080))
+        await page.mouse.move(random.randint(0, 1920), random.randint(0, 1080))
+
+        # Add random scroll behavior
+        await page.evaluate("""
+            window.scrollTo({
+                top: Math.floor(Math.random() * 100),
+                behavior: 'smooth'
+            });
+        """)
+
+        return browser, context, page
+
+    async def _handle_incapsula_challenge(self, page):
+        """Handle Incapsula security challenge if present."""
+        try:
+            # Check for Incapsula iframe
+            incapsula_iframe = await page.query_selector('iframe#main-iframe')
+            if incapsula_iframe:
+                print("Detected Incapsula security check, attempting to handle...")
+                
+                # Wait for the iframe to load
+                await page.wait_for_timeout(5000)  # Wait for initial load
+                
+                # Get the iframe content
+                frame_content = await incapsula_iframe.content_frame()
+                if frame_content:
+                    # Wait for any potential challenge elements
+                    await frame_content.wait_for_timeout(3000)
+                    
+                    # Check for common challenge elements
+                    challenge_elements = [
+                        'input[type="text"]',
+                        'input[type="checkbox"]',
+                        'button[type="submit"]',
+                        'div[class*="challenge"]',
+                        'div[class*="security"]'
+                    ]
+                    
+                    for selector in challenge_elements:
+                        element = await frame_content.query_selector(selector)
+                        if element:
+                            print(f"Found challenge element: {selector}")
+                            # Wait a bit before interacting
+                            await page.wait_for_timeout(2000)
+                            
+                            if selector == 'input[type="text"]':
+                                # If it's a text input, we might need to solve a CAPTCHA
+                                print("Text input detected - might be a CAPTCHA")
+                                return False
+                            elif selector == 'input[type="checkbox"]':
+                                # If it's a checkbox, try to click it
+                                await element.click()
+                                await page.wait_for_timeout(2000)
+                            elif selector == 'button[type="submit"]':
+                                # If it's a submit button, try to click it
+                                await element.click()
+                                await page.wait_for_timeout(5000)
+                
+                # Wait for potential redirect
+                await page.wait_for_timeout(5000)
+                
+                # Check if we're still on the challenge page
+                if await page.query_selector('iframe#main-iframe'):
+                    print("Still on Incapsula challenge page after handling attempt")
+                    return False
+                
+                print("Successfully handled Incapsula challenge")
+                return True
             
-        Returns:
-            list: List of car listing dictionaries
+            return True  # No Incapsula challenge found
+            
+        except Exception as e:
+            print(f"Error handling Incapsula challenge: {str(e)}")
+            return False
+
+    async def scrape(self, limit=100):
         """
-        print(f"Scraping {self.name}...")
+        Scrape car listings from AutoTrader.ca using Playwright with enhanced anti-detection.
+        """
+        print(f"Scraping {self.name} with enhanced Playwright configuration...")
         listings = []
-        driver = None
+        
         retries = 0
-
         while retries <= self.MAX_RETRIES:
-            driver = None # Initialize driver to None for each attempt
+            browser = None
+            context = None 
+            page = None
+            playwright_instance = None
+            trace_path = f"autotrader_playwright_trace_attempt_{retries + 1}.zip"
+            tracing_started_this_attempt = False
+            
             try:
-                driver = self._setup_driver()
+                playwright_instance = await pw_async.async_playwright().start()
+                browser, context, page = await self._setup_playwright_page(playwright_instance)
+                
+                print(f"Starting Playwright trace for attempt {retries + 1}")
+                await context.tracing.start(screenshots=True, snapshots=True, sources=True)
+                tracing_started_this_attempt = True
+
+                # Simulate human-like interactions to improve stealth
+                await page.mouse.move(random.randint(100, 1820), random.randint(100, 980))
+                await page.wait_for_timeout(random.randint(500, 1500))
+                await page.evaluate("window.scrollBy(0, Math.floor(Math.random()*300 + 100))")
+                await page.wait_for_timeout(random.randint(500, 1500))
+
+                # Add random delays between actions to appear more human-like
+                def random_delay():
+                    time.sleep(random.uniform(2, 5))
+
                 print(f"Attempting to load URL: {self.search_url}")
-                driver.get(self.search_url)
-                time.sleep(random.uniform(3, 7)) # Wait for initial page load/redirects
+                await page.goto(self.search_url, timeout=60000, wait_until="networkidle")
+                random_delay()
 
-                # Basic CAPTCHA/Block detection (more can be added)
-                page_title_lower = driver.title.lower()
-                page_source_lower = driver.page_source.lower()
+                # Add a longer delay after page load
+                print("Waiting for dynamic content to load...")
+                await page.wait_for_timeout(5000)  # 5 second delay
 
-                captcha_keywords = ["captcha", "verify you are human", "are you a robot", "security check"]
-                block_keywords = ["access denied", "blocked", "forbidden", "site unavailable"]
+                # Enhanced CAPTCHA detection
+                captcha_indicators = [
+                    "div[class*='captcha']",
+                    "div[class*='challenge']",
+                    "div[class*='security-check']",
+                    "div[class*='bot-detection']",
+                    "div[class*='incapsula']",
+                    "div[class*='cloudflare']",
+                    "iframe[src*='captcha']",
+                    "iframe[src*='challenge']",
+                    "iframe[src*='security']",
+                    "iframe[src*='incapsula']",
+                    "iframe[src*='cloudflare']",
+                    "form[action*='captcha']",
+                    "form[action*='challenge']",
+                    "form[action*='security']",
+                    "form[action*='incapsula']",
+                    "form[action*='cloudflare']"
+                ]
 
-                if any(keyword in page_title_lower for keyword in captcha_keywords) or \
-                   any(keyword in page_source_lower for keyword in captcha_keywords):
-                    print(f"CAPTCHA detected on {self.name}. Page title: {driver.title}. Stopping scrape for this site.")
-                    if driver:
+                for indicator in captcha_indicators:
+                    if await page.query_selector(indicator):
+                        print(f"CAPTCHA detected with indicator: {indicator}")
                         filepath = f"autotrader_captcha_page_{time.strftime('%Y%m%d_%H%M%S')}.html"
                         with open(filepath, "w", encoding="utf-8") as f:
-                            f.write(driver.page_source)
-                        print(f"Saved CAPTCHA page content to {filepath}")
-                    break # Exit retry loop immediately
+                            f.write(await page.content())
+                        raise ConnectionError("CAPTCHA detected")
 
-                if any(keyword in page_title_lower for keyword in block_keywords) or \
-                   any(keyword in page_source_lower for keyword in block_keywords):
-                    print(f"Block detected on {self.name} (title: {driver.title}). Raising ConnectionError for retry.")
-                    raise ConnectionError("Block/Rate limit detected based on page content")
+                # Handle Incapsula challenge if present
+                if not await self._handle_incapsula_challenge(page):
+                    print("Failed to handle Incapsula challenge")
+                    raise ConnectionError("Failed to handle Incapsula challenge")
 
-                # Wait for listings to load - main indicator of a successful page
-                WebDriverWait(driver, 20).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "div.result-item"))
-                )
-                print("Main listing container detected.")
+                # Handle cookie consent with more robust selectors
+                cookie_selectors = [
+                    'button:has-text("Accept All")',
+                    'button:has-text("Allow All")',
+                    'button:has-text("Accept cookies")',
+                    'button:has-text("I accept")',
+                    'button:has-text("Agree and Proceed")',
+                    'button[aria-label*="cookie"]',
+                    'button[aria-label*="Cookie"]',
+                    'button[data-test*="cookie"]',
+                    'button[data-test*="Cookie"]',
+                    '//button[contains(text(), "Accept")]',
+                    '//button[contains(text(), "Allow")]',
+                    '//button[contains(text(), "Agree")]'
+                ]
 
-                # Get total pages to scrape (or estimate)
-                # This logic might need adjustment based on how Autotrader displays total results
-                # and if the limit is reached before processing all potential pages.
-                # For now, we'll try to get all results up to the 'limit'.
-                
-                # Pagination loop
-                current_page = 1
+                for selector in cookie_selectors:
+                    try:
+                        cookie_button = await page.query_selector(selector)
+                        if cookie_button and await cookie_button.is_visible():
+                            print(f"Found cookie button with selector: {selector}")
+                            await cookie_button.click(timeout=5000)
+                            random_delay()
+                            break
+                    except Exception as e:
+                        continue
+
+                # Wait for listings with more robust selectors
+                listing_selectors = [
+                    # Primary selectors
+                    "div[data-test='result-item']",
+                    "div.result-item",
+                    "div[data-test='listing-card']",
+                    "div.listing-card",
+                    # Class-based selectors
+                    "div[class*='result-item']",
+                    "div[class*='listing-item']",
+                    "div[class*='listing-card']",
+                    "div[class*='vehicle-card']",
+                    "div[class*='ad-listing']",
+                    "div[class*='listing-container'] > div",
+                    # Fallback selectors
+                    "section.listing-section div.listing-item",
+                    "ul.listings > li",
+                ]
+
+                listing_container = None
+                for selector in listing_selectors:
+                    try:
+                        print(f"Trying AutoTrader selector: {selector}")
+                        listing_container = await page.wait_for_selector(selector, timeout=10000)
+                        if listing_container:
+                            # Verify we can find actual listings within this container
+                            found = await page.query_selector_all(selector)
+                            if found:
+                                print(f"AutoTrader selector succeeded: {selector}, found {len(found)} items")
+                                break
+                            else:
+                                print(f"Selector {selector} found container but no items inside")
+                                listing_container = None
+                    except Exception as e:
+                        print(f"AutoTrader selector {selector} failed: {e}")
+                        continue
+
+                if not listing_container:
+                    # Save page snapshot for debugging
+                    filepath = f"autotrader_no_listings_page_{time.strftime('%Y%m%d_%H%M%S')}.html"
+                    with open(filepath, "w", encoding="utf-8") as f:
+                        f.write(await page.content())
+                    print(f"Saved AutoTrader no-listings snapshot to {filepath}")
+                    raise ConnectionError("No listing container found")
+
+                current_page_num = 1
                 processed_this_attempt = 0
                 while True: # Loop for pages
-                    print(f"Scraping page {current_page}...")
-                    listing_elements = driver.find_elements(By.CSS_SELECTOR, "div.result-item")
-                    if not listing_elements and current_page == 1:
-                        print("No listings found on the first page. This might be a soft block or an issue with search criteria.")
-                        # Potentially save page source for debugging
-                        filepath = f"autotrader_no_listings_page_{time.strftime('%Y%m%d_%H%M%S')}.html"
+                    # Navigate to specific page using URL offset
+                    offset = (current_page_num - 1) * 100  # matches rcp=100 results per page
+                    page_url = self.search_url.replace("rcs=0", f"rcs={offset}")
+                    print(f"Playwright: Loading page {current_page_num}, offset={offset}: {page_url}")
+                    await page.goto(page_url, timeout=60000, wait_until="domcontentloaded")
+                    # Ensure elements are loaded
+                    await page.wait_for_selector("div.result-item", timeout=20000, state="visible")
+                    time.sleep(random.uniform(1,3))  # give it a moment
+                    
+                    listing_elements = await page.query_selector_all("div.result-item")
+                    if not listing_elements and current_page_num == 1:
+                        print("No listings found on the first page with Playwright. This might be a soft block or an issue with search criteria.")
+                        filepath = f"autotrader_playwright_no_listings_page_{time.strftime('%Y%m%d_%H%M%S')}.html"
                         with open(filepath, "w", encoding="utf-8") as f:
-                            f.write(driver.page_source)
-                        print(f"Saved no-listings page content to {filepath}")
-                        # Decide if this is a retryable offense or means no results
-                        # For now, let's assume it might be temporary and let retry logic handle it if it leads to an exception.
-                        # If it doesn't throw an exception here, the outer loop might just finish with 0 results.
-                        # To force a retry, we could raise ConnectionError here.
-                        # raise ConnectionError("No listings found on first page, might be a soft block.")
-                        break # Break page loop, will then break retry loop if no listings added
+                            f.write(await page.content())
+                        print(f"Saved Playwright no-listings page content to {filepath}")
+                        break 
 
-                    print(f"Found {len(listing_elements)} elements on page {current_page}.")
+                    print(f"Found {len(listing_elements)} elements on page {current_page_num} with Playwright.")
 
-                    for element_idx, element in enumerate(listing_elements):
+                    for element_idx, element_handle in enumerate(listing_elements):
+                        if (element_idx + 1) % 20 == 0: 
+                            print(f"Processing item {element_idx + 1} of {len(listing_elements)} on page {current_page_num}...")
+
                         if len(listings) >= limit:
                             print(f"Reached scrape limit of {limit} listings.")
-                            break # Break item loop
+                            break 
                         
                         try:
-                            url_element = element.find_element(By.CSS_SELECTOR, "a.link-overlay")
-                            url = url_element.get_attribute("href")
-                            title = element.find_element(By.CSS_SELECTOR, "h2.title").text.strip()
-                            year = self._extract_year(title) # Assumes helper methods exist
-                            make, model = self._extract_make_model(title) # Assumes helper methods exist
+                            # Get outerHTML of the listing item once
+                            item_html = await element_handle.evaluate("element => element.outerHTML")
+                            item_soup = BeautifulSoup(item_html, 'html.parser')
 
-                            price_str_element = element.find_element(By.CSS_SELECTOR, "span.price-amount")
-                            price = self._extract_price(price_str_element.text) if price_str_element else None
+                            url_element = item_soup.find("a", class_="link-overlay")
+                            url = url_element['href'] if url_element and url_element.has_attr('href') else None
+                            if url and not url.startswith("http"):
+                                url = self.base_url + url
+
+                            title_element = item_soup.find("h2", class_="title")
+                            title = title_element.get_text(strip=True) if title_element else "N/A"
                             
-                            mileage_str_element = element.find_element(By.CSS_SELECTOR, "span.kms") # Check if class is "kms" or similar
-                            mileage = self._extract_mileage(mileage_str_element.text) if mileage_str_element else None
+                            year = self._extract_year(title)
+                            make, model = self._extract_make_model(title)
+
+                            price_str_element = item_soup.find("span", class_="price-amount")
+                            price = self._extract_price(price_str_element.get_text(strip=True)) if price_str_element else None
                             
-                            # Extract body type (example, needs refinement based on actual HTML)
-                            body_type = "unknown" # Default
+                            mileage_str_element = item_soup.find("span", class_="kms") 
+                            mileage = self._extract_mileage(mileage_str_element.get_text(strip=True)) if mileage_str_element else None
+                            
+                            body_type = "unknown"
                             try:
-                                specs_list = element.find_elements(By.CSS_SELECTOR, "div.ad-specs li") # Example selector
-                                for spec in specs_list:
-                                    spec_text = spec.text.lower()
+                                specs_list_items = item_soup.select("div.ad-specs li") # BeautifulSoup select
+                                for spec_item in specs_list_items:
+                                    spec_text = spec_item.get_text(strip=True).lower()
                                     if "sedan" in spec_text: body_type = "sedan"; break
                                     if "coupe" in spec_text: body_type = "coupe"; break
                                     if "hatchback" in spec_text: body_type = "hatchback"; break
                                     if "suv" in spec_text: body_type = "suv"; break
                                     if "truck" in spec_text: body_type = "truck"; break
                                     if "van" in spec_text or "minivan" in spec_text: body_type = "van"; break
-                            except NoSuchElementException:
-                                pass # Body type not found or different structure
+                            except Exception: 
+                                pass
 
-                            # --- Apply Make/Model/Year Filter (if approved_vehicles is provided) ---
                             is_approved = False
                             if self.approved_vehicles:
-                                if year and make and model: # Ensure we have data to filter on
+                                if year and make and model:
                                     scraped_make_lc = str(make).lower().strip()
                                     scraped_model_norm = str(model).lower().replace('-', ' ').strip()
-                                    scraped_year_int = int(year) # Assuming _extract_year returns int or convertible
+                                    scraped_year_int = int(year)
 
                                     for approved_make, approved_model, approved_year_filter in self.approved_vehicles:
                                         if (scraped_make_lc == approved_make and
@@ -201,18 +514,16 @@ class AutoTraderScraper(BaseScraper):
                                             scraped_model_norm.startswith(approved_model)):
                                             is_approved = True
                                             break
-                                else: # Not enough info to check against approved list, treat as not approved if filtering is active
+                                else:
                                     is_approved = False
                             else:
-                                is_approved = True # No filter list, so all are "approved"
+                                is_approved = True
 
                             if not is_approved:
-                                # print(f"Skipping unapproved vehicle: {year} {make} {model}")
                                 continue
-                            # --- End Filter ---
 
                             if not all([url, year, make, model, price is not None, mileage is not None]):
-                                print(f"Skipping item due to missing core data after extraction: Title='{title}', URL='{url}'")
+                                print(f"Skipping item due to missing core data after Playwright extraction: Title='{title}', URL='{url}'")
                                 continue
 
                             listing_data = {
@@ -223,114 +534,95 @@ class AutoTraderScraper(BaseScraper):
                             processed_this_attempt +=1
                         
                         except Exception as e_item:
-                            print(f"Error extracting details for one listing on page {current_page}, item {element_idx + 1}: {str(e_item)}")
-                            # Potentially log the specific item's outerHTML for debugging if extraction fails often
-                            # try:
-                            #     print(f"Problematic element HTML: {element.get_attribute('outerHTML')[:500]}")
-                            # except: pass
-                            continue # Process next item
+                            print(f"Error extracting details for one listing (BS4 parse) on page {current_page_num}, item {element_idx + 1}: {str(e_item)}")
+                            # Optionally log item_html if parsing fails often
+                            # print(f"Problematic item HTML: {item_html[:500]}")
+                            continue 
 
                     if len(listings) >= limit:
-                        break # Break page loop
+                        break 
 
-                    # Attempt to go to the next page
-                    try:
-                        # Look for a "Next" button - selector might need verification
-                        next_button_candidates = driver.find_elements(By.CSS_SELECTOR, "a.page-direction-control.page-direction-control-right, a.next-page-link, button.next-page")
-                        next_button = None
-                        for btn in next_button_candidates:
-                            if btn.is_displayed() and btn.is_enabled():
-                                next_button = btn
-                                break
-                        
-                        if next_button:
-                            print(f"Found next page button. Text: '{next_button.text[:30]}'. Clicking...")
-                            driver.execute_script("arguments[0].click();", next_button) # JS click can be more robust
-                            time.sleep(random.uniform(3, 6)) # Wait for page to load
-                            # Crucial: Wait for new content to appear to confirm page change
-                            WebDriverWait(driver, 20).until(
-                                EC.presence_of_element_located((By.CSS_SELECTOR, "div.result-item")) 
-                                # Consider a more specific check if result-item is too generic or appears before full load
-                            )
-                            print("New page content loaded.")
-                            current_page += 1
-                        else:
-                            print("No 'Next' button found or it's not interactable. Assuming end of results.")
-                            break # Break page loop
-                    except (NoSuchElementException, TimeoutException) as e_page:
-                        print(f"Could not navigate to next page or content did not load: {str(e_page)}. Assuming end of results for this attempt.")
-                        break # Break page loop
-                    except Exception as e_next_page_general:
-                        print(f"Unexpected error during next page navigation: {e_next_page_general}")
-                        # Save page source for debugging
-                        filepath = f"autotrader_nextpage_error_{time.strftime('%Y%m%d_%H%M%S')}.html"
-                        with open(filepath, "w", encoding="utf-8") as f:
-                            f.write(driver.page_source)
-                        print(f"Saved page content at next page error to {filepath}")
-                        break # Break page loop
+                    # After processing all items on this page, check if we should continue
+                    if len(listing_elements) < 100:
+                        print(f"Last page reached at page {current_page_num} (only {len(listing_elements)} items).")
+                        break
+                    current_page_num += 1
 
-                if processed_this_attempt > 0 or not listings: # if we processed some, or if we have no listings and broke early from page 1
-                    print(f"Finished scraping attempt {retries + 1}. Listings collected in this attempt: {processed_this_attempt}. Total: {len(listings)}")
+                if processed_this_attempt > 0 or not listings:
+                    print(f"Finished Playwright attempt {retries + 1}. Listings collected: {processed_this_attempt}. Total: {len(listings)}")
                 
-                if len(listings) >= limit: # If limit reached, successful overall
-                    print(f"Scraping limit ({limit}) reached for {self.name}.")
-                    break # Exit retry loop
+                if len(listings) >= limit:
+                    print(f"Scraping limit ({limit}) reached for {self.name} with Playwright.")
+                    break 
 
-                if current_page > 1 and processed_this_attempt == 0 and len(listing_elements) > 0:
-                    print("Processed multiple pages but last page had elements yet no new listings were added (likely all filtered out). Considering this a completed run for current filters.")
-                    break # Exit retry loop - successfully scraped all available matching items
-
-                if not listings and current_page == 1 and not listing_elements: # No results found at all
-                    print("No listings found matching criteria after first page load. Ending.")
+                if current_page_num > 1 and processed_this_attempt == 0 and len(listing_elements) > 0:
+                    print("Processed multiple pages with Playwright but last page had elements yet no new listings (all filtered). Run complete.")
                     break
 
-                # If we are here, it means we didn't reach the limit, and there might be more pages or it was an issue.
-                # If no listings were processed in this attempt but the loop didn't break due to 'no next page', it might be an issue.
-                # However, the retry logic handles broad exceptions. If we successfully processed all pages, this loop will also break.
-                break # Default break from retry loop if everything in try block completed without specific error for retry.
+                if not listings and current_page_num == 1 and not listing_elements:
+                    print("No listings found matching criteria on first page (Playwright). Ending.")
+                    break
+                
+                break # Successful attempt, break retry loop
 
-
-            except (TimeoutException, ConnectionError) as e_retry:
-                print(f"A retryable error occurred on attempt {retries + 1}/{self.MAX_RETRIES + 1} for {self.name}: {str(e_retry)}")
+            except (pw_async.TimeoutError, ConnectionError) as e_retry_pw: # Playwright TimeoutError is a common one for retry
+                print(f"A Playwright retryable error occurred on attempt {retries + 1}/{self.MAX_RETRIES + 1} for {self.name}: {str(e_retry_pw)}")
+                if tracing_started_this_attempt and context:
+                    await context.tracing.stop(path = trace_path)
+                    tracing_started_this_attempt = False # Mark as stopped
+                    print(f"Playwright trace saved to {trace_path} due to retryable error.")
                 retries += 1
-                if driver: # Save page source on retryable error
-                    filepath = f"autotrader_retry_error_page_{retries}_{time.strftime('%Y%m%d_%H%M%S')}.html"
+                if page: # Save page source on retryable error
+                    filepath = f"autotrader_playwright_retry_error_page_{retries}_{time.strftime('%Y%m%d_%H%M%S')}.html"
                     try:
                         with open(filepath, "w", encoding="utf-8") as f:
-                            f.write(driver.page_source)
-                        print(f"Saved page source at retryable error to {filepath}")
+                            f.write(await page.content())
+                        print(f"Saved page source at Playwright retryable error to {filepath}")
                     except Exception as e_save:
-                        print(f"Could not save page source during retry handling: {e_save}")
+                        print(f"Could not save page source during Playwright retry handling: {e_save}")
 
                 if retries <= self.MAX_RETRIES:
                     delay = min(self.MAX_RETRY_DELAY_S, self.INITIAL_RETRY_DELAY_S * (2 ** (retries - 1)))
                     jitter = delay * 0.2 * random.random()
                     actual_delay = delay + jitter
-                    print(f"Retrying in {actual_delay:.2f} seconds...")
-                    if driver: driver.quit(); driver = None # Ensure driver is closed before sleep
+                    print(f"Retrying with Playwright in {actual_delay:.2f} seconds...")
+                    # Close browser and playwright instance before sleep
+                    if browser: await browser.close()
+                    if playwright_instance: await playwright_instance.stop()
+                    browser, context, page, playwright_instance = None, None, None, None
                     time.sleep(actual_delay)
                 else:
-                    print(f"Max retries reached for {self.name}. Moving on.")
-                    break # Exit retry loop
+                    print(f"Max retries reached for {self.name} with Playwright. Moving on.")
+                    break 
             
-            except Exception as e_major:
-                print(f"Major unexpected error in {self.name} scraping process: {str(e_major)}")
-                if driver:
-                    filepath = f"autotrader_major_error_page_{time.strftime('%Y%m%d_%H%M%S')}.html"
+            except Exception as e_major_pw:
+                print(f"Major unexpected error in {self.name} Playwright scraping process: {str(e_major_pw)}")
+                if tracing_started_this_attempt and context:
+                    await context.tracing.stop(path = trace_path)
+                    tracing_started_this_attempt = False # Mark as stopped
+                    print(f"Playwright trace saved to {trace_path} due to major error.")
+                if page:
+                    filepath = f"autotrader_playwright_major_error_page_{time.strftime('%Y%m%d_%H%M%S')}.html"
                     try:
                         with open(filepath, "w", encoding="utf-8") as f:
-                            f.write(driver.page_source)
-                        print(f"Saved page source at major error to {filepath}")
+                            f.write(await page.content())
+                        print(f"Saved page source at Playwright major error to {filepath}")
                     except Exception as e_save:
-                        print(f"Could not save page source during major error handling: {e_save}")
-                break # Exit retry loop for major errors
+                        print(f"Could not save page source during Playwright major error handling: {e_save}")
+                break 
             
             finally:
-                if driver:
-                    driver.quit()
-                    # print(f"WebDriver quit for AutoTrader attempt {retries + (1 if retries < self.MAX_RETRIES else 0)} if active.")
+                if tracing_started_this_attempt and context: # If tracing was started and not explicitly stopped
+                    print(f"Stopping trace for attempt {retries + (1 if retries < self.MAX_RETRIES and not listings else 0)} as part of finally block.")
+                    await context.tracing.stop(path = trace_path)
+                    print(f"Trace saved to {trace_path} at the end of the attempt (finally block).")
+                if browser:
+                    await browser.close()
+                if playwright_instance:
+                    await playwright_instance.stop()
+                # print(f"Playwright browser and instance stopped for AutoTrader attempt.")
 
-        print(f"Scraped a total of {len(listings)} listings from {self.name} after all attempts.")
+        print(f"Scraped a total of {len(listings)} listings from {self.name} using Playwright after all attempts.")
         return listings
 
     # Helper methods (previously defined, ensure they are present and correct)
